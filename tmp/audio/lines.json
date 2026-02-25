@@ -1,0 +1,89 @@
+{
+  "herald": [
+    { "id": "faceoff_start", "text": "Right then—blades down!" },
+    { "id": "puck_live", "text": "Here we go—puck’s live!" },
+    { "id": "faceoff_center", "text": "Face-off at center—now!" },
+    { "id": "back_to_action", "text": "Back tae the action!" },
+    { "id": "keep_moving", "text": "Keep the feet movin’!" },
+
+    { "id": "clean_hit", "text": "Clean hit!" },
+    { "id": "on_target", "text": "That’s it—right on target!" },
+    { "id": "perfect_touch", "text": "Perfect touch!" },
+    { "id": "through_gate", "text": "Straight through the gate!" },
+    { "id": "nailed_it", "text": "Bang! Nailed it!" },
+
+    { "id": "combo_building", "text": "Combo’s buildin’!" },
+    { "id": "chain_alive", "text": "That chain’s alive!" },
+    { "id": "keep_going", "text": "Keep it goin’!" },
+    { "id": "on_a_tear", "text": "On a tear!" },
+    { "id": "streak_running", "text": "Streak’s still runnin’!" },
+
+    { "id": "turnover", "text": "Turnover!" },
+    { "id": "costly_loss", "text": "Lost it—costly!" },
+    { "id": "slipped_away", "text": "That one slipped away!" },
+    { "id": "pressure_up", "text": "Careful—pressure’s up!" },
+    { "id": "reset", "text": "Dinnae panic—reset!" },
+
+    { "id": "threat_rising", "text": "Threat level’s risin’!" },
+    { "id": "danger", "text": "Watch it—danger!" },
+    { "id": "closing_in", "text": "They’re closin’ in!" },
+    { "id": "one_mistake", "text": "One mistake an’ it’s trouble!" },
+    { "id": "hold_line", "text": "Hold the line!" },
+
+    { "id": "massive_play", "text": "Oh, that’s massive!" },
+    { "id": "what_a_play", "text": "What a play!" },
+    { "id": "magic_like_that", "text": "That’s the kind o’ magic we like!" },
+    { "id": "unreal_control", "text": "Unreal control!" },
+    { "id": "now_we_talk", "text": "Now we’re talkin’!" },
+
+    { "id": "goal", "text": "Goal!" },
+    { "id": "light_lamp", "text": "That’s in—light the lamp!" },
+    { "id": "top_shelf", "text": "Top shelf!" },
+    { "id": "right_in", "text": "Right in the net!" },
+    { "id": "broken_through", "text": "They’ve broken through!" },
+
+    { "id": "time", "text": "Time!" },
+    { "id": "final_horn", "text": "That’s the horn!" },
+    { "id": "run_over", "text": "Run’s over—check the tally!" },
+    { "id": "good_effort", "text": "Good effort—again!" },
+    { "id": "next_run", "text": "Shake it off—next run!" }
+  ],
+
+  "oracle": [
+    { "id": "runes_awaken", "text": "The runes awaken…" },
+    { "id": "ice_remembers", "text": "The ice remembers…" },
+    { "id": "gate_stirs", "text": "A gate stirs beneath the surface…" },
+    { "id": "arena_watches", "text": "The arena watches." },
+    { "id": "steel_sorcery", "text": "Steel and sorcery… entwined." },
+
+    { "id": "chain_holds", "text": "The chain holds." },
+    { "id": "unbroken", "text": "Unbroken." },
+    { "id": "precision_deepens", "text": "Precision… deepens." },
+    { "id": "control_power", "text": "Control becomes power." },
+    { "id": "rhythm_yours", "text": "The rhythm is yours." },
+
+    { "id": "seal_trembles", "text": "The seal trembles…" },
+    { "id": "pressure_gathers", "text": "Pressure gathers." },
+    { "id": "gate_hungers", "text": "The gate hungers…" },
+    { "id": "warning_puckbound", "text": "A warning, Puckbound…" },
+    { "id": "ice_fractures", "text": "The ice fractures… softly." },
+
+    { "id": "barrier_weakens", "text": "The barrier weakens." },
+    { "id": "shield_failing", "text": "Shield… failing." },
+    { "id": "defenses_falter", "text": "Arcane defenses… falter." },
+    { "id": "hold_fast", "text": "Hold fast." },
+    { "id": "restore_ward", "text": "Restore the ward." },
+
+    { "id": "greater_gate", "text": "A greater gate awakens." },
+    { "id": "ancient_moves", "text": "Something ancient moves." },
+    { "id": "sigil_opens", "text": "The sigil opens." },
+    { "id": "do_not_blink", "text": "Do not blink." },
+    { "id": "prove_it", "text": "Now… prove it." },
+
+    { "id": "gate_yields", "text": "The gate yields." },
+    { "id": "well_done", "text": "Well done." },
+    { "id": "runes_silent", "text": "The runes fall silent." },
+    { "id": "name_carries", "text": "Your name carries." },
+    { "id": "again_ready", "text": "Again… when you are ready." }
+  ]
+}
