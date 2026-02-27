@@ -1,5 +1,13 @@
 import { Game, type GameRunSummary } from "../game/Game";
 import { applyRunXp, calculateRunXp, getLevelProgress } from "../game/ProgressionSystem";
+import { selectMonsterTeamForRun, type MonsterTeam } from "../game/MonsterTeams";
+import { CutscenePlayer } from "../cutscenes/CutscenePlayer";
+import {
+  ESCAPE_SEAL_GOAL,
+  createBetweenMatchCutscene,
+  createOpeningCutscene
+} from "../cutscenes/cutsceneLibrary";
+import type { CutsceneDefinition, CutsceneId, StoryContext } from "../cutscenes/types";
 import {
   getThreatEventMilestone,
   getThreatProgressionState,
@@ -32,7 +40,7 @@ import playerAPortraitUrl from "../../tmp/A.png";
 import playerKPortraitUrl from "../../tmp/k.png";
 import goblinPortraitUrl from "../../tmp/G.png";
 
-type ScreenMode = "profiles" | "play" | "results" | "customize" | "transition";
+type ScreenMode = "profiles" | "play" | "results" | "customize" | "transition" | "cutscene";
 
 type RunOutcome = {
   summary: GameRunSummary;
@@ -51,6 +59,7 @@ function cloneProfile(profile: Profile): Profile {
   return {
     ...profile,
     perks: [...profile.perks],
+    seenCutscenes: [...profile.seenCutscenes],
     unlockedCosmetics: [...profile.unlockedCosmetics],
     equippedCosmetics: { ...profile.equippedCosmetics },
     stats: { ...profile.stats }
@@ -118,6 +127,7 @@ class AppController {
   private readonly canvas: HTMLCanvasElement;
   private readonly gameOverlay: HTMLDivElement;
   private readonly screenLayer: HTMLDivElement;
+  private readonly cutscenePlayer: CutscenePlayer;
 
   private readonly profileManager = new ProfileManager();
   private activeProfile: Profile | null = null;
@@ -127,9 +137,12 @@ class AppController {
   private customizeReturnMode: "profiles" | "play" | "results" = "profiles";
   private readonly trainingCompletedProfileIds = new Set<string>();
   private activePlaySessionKind: "match" | "training" | "spell_demo" = "match";
+  private currentMonsterTeam: MonsterTeam | null = null;
   private pendingTransitionTimeoutId: number | null = null;
   private pendingTransitionIntervalId: number | null = null;
   private pendingTransitionToken = 0;
+  private activeCutsceneCancel: (() => void) | null = null;
+  private activeCutsceneRunId = 0;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -149,6 +162,7 @@ class AppController {
 
     this.screenLayer = document.createElement("div");
     this.screenLayer.className = "screen-layer";
+    this.cutscenePlayer = new CutscenePlayer(this.screenLayer);
 
     this.shell.append(this.canvas, this.gameOverlay, this.screenLayer);
     this.root.append(this.shell);
@@ -162,6 +176,8 @@ class AppController {
 
   destroy(): void {
     this.clearPendingTransition();
+    this.stopCutscene();
+    this.cutscenePlayer.destroy();
     this.stopGame();
     this.screenLayer.replaceChildren();
     this.root.innerHTML = "";
@@ -169,7 +185,9 @@ class AppController {
 
   private showProfiles(): void {
     this.mode = "profiles";
+    this.currentMonsterTeam = null;
     this.clearPendingTransition();
+    this.stopCutscene();
     this.stopGame();
     this.renderProfilesScreen();
   }
@@ -182,6 +200,7 @@ class AppController {
     this.customizeReturnMode = returnMode;
     this.mode = "customize";
     this.clearPendingTransition();
+    this.stopCutscene();
     this.stopGame();
     this.renderCustomizeScreen();
   }
@@ -191,6 +210,7 @@ class AppController {
     forceSpellDemo?: boolean;
     skipAutoTraining?: boolean;
     skipThreatEvent?: boolean;
+    skipStoryCutscene?: boolean;
   }): void {
     if (!this.activeProfile) {
       this.showProfiles();
@@ -207,6 +227,23 @@ class AppController {
       !this.trainingCompletedProfileIds.has(profile.id);
     const trainingMode = !spellDemoMode && (options?.forceTraining === true || shouldAutoTraining);
     this.activePlaySessionKind = spellDemoMode ? "spell_demo" : trainingMode ? "training" : "match";
+    this.currentMonsterTeam = selectMonsterTeamForRun(profile.stats.runs, {
+      trainingMode,
+      spellDemoMode
+    });
+
+    if (!options?.skipStoryCutscene && this.shouldPlayOpeningCutscene(profile, spellDemoMode)) {
+      const storyContext = this.buildStoryContext(profile, null, this.currentMonsterTeam?.name ?? "Cryptfang Ghouls");
+      const cutscene = createOpeningCutscene(storyContext);
+      this.playStoryCutscene(cutscene, () => {
+        this.markCutsceneSeen(cutscene.id);
+        this.startPlay({
+          ...(options ?? {}),
+          skipStoryCutscene: true
+        });
+      });
+      return;
+    }
 
     if (!spellDemoMode && !trainingMode && options?.skipThreatEvent !== true) {
       const threatEvent = getThreatEventMilestone(profile.stats.runs);
@@ -219,6 +256,7 @@ class AppController {
     this.mode = "play";
     this.lastOutcome = null;
     this.clearPendingTransition();
+    this.stopCutscene();
     this.screenLayer.replaceChildren();
 
     this.stopGame();
@@ -230,6 +268,7 @@ class AppController {
       playerRunCount: profile.stats.runs,
       trainingMode,
       spellDemoMode,
+      monsterTeam: this.currentMonsterTeam,
       playerLoadoutSummary: loadoutSummary(profile),
       onRunComplete: (summary) => {
         this.handleRunComplete(summary);
@@ -249,6 +288,90 @@ class AppController {
     this.gameOverlay.replaceChildren();
   }
 
+  private stopCutscene(): void {
+    this.activeCutsceneRunId += 1;
+    if (!this.activeCutsceneCancel) {
+      return;
+    }
+    this.activeCutsceneCancel();
+    this.activeCutsceneCancel = null;
+  }
+
+  private shouldPlayOpeningCutscene(profile: Profile, spellDemoMode: boolean): boolean {
+    if (spellDemoMode) {
+      return false;
+    }
+    return !profile.seenCutscenes.includes("OPENING_FIRST_LAUNCH");
+  }
+
+  private markCutsceneSeen(id: CutsceneId): void {
+    if (!this.activeProfile) {
+      return;
+    }
+    if (this.activeProfile.seenCutscenes.includes(id)) {
+      return;
+    }
+    const updated = this.profileManager.updateProfile(this.activeProfile.id, {
+      ...this.activeProfile,
+      seenCutscenes: [...this.activeProfile.seenCutscenes, id]
+    });
+    this.activeProfile = updated;
+  }
+
+  private buildStoryContext(
+    profile: Profile,
+    lastMatchResult: StoryContext["lastMatchResult"],
+    monsterName: string
+  ): StoryContext {
+    return {
+      playerName: profile.displayName,
+      monsterName,
+      runCount: profile.stats.runs,
+      matchWins: profile.stats.matchWins,
+      lastMatchResult
+    };
+  }
+
+  private playStoryCutscene(definition: CutsceneDefinition, onComplete: () => void): void {
+    this.mode = "cutscene";
+    this.clearPendingTransition();
+    this.stopGame();
+    this.stopCutscene();
+    this.screenLayer.replaceChildren();
+    const runId = ++this.activeCutsceneRunId;
+    const handle = this.cutscenePlayer.play(definition, () => {
+      if (this.activeCutsceneRunId !== runId) {
+        return;
+      }
+      this.activeCutsceneCancel = null;
+      onComplete();
+    });
+    this.activeCutsceneCancel = () => {
+      handle.cancel();
+    };
+  }
+
+  private playBetweenMatchCutscene(): void {
+    const profile = this.activeProfile;
+    if (!profile) {
+      this.showProfiles();
+      return;
+    }
+    const outcome = this.lastOutcome;
+    const summary = outcome?.summary;
+    const monsterName = (typeof summary?.monsterTeamName === "string" ? summary.monsterTeamName : this.currentMonsterTeam?.name) ?? "Cryptfang Ghouls";
+    const lastMatchResult: StoryContext["lastMatchResult"] = !summary
+      ? null
+      : summary.endReason === "breach"
+        ? "breach"
+        : summary.matchResult;
+    const context = this.buildStoryContext(profile, lastMatchResult, monsterName);
+    const definition = createBetweenMatchCutscene(context);
+    this.playStoryCutscene(definition, () => {
+      this.startPlay({ skipStoryCutscene: true });
+    });
+  }
+
   private handleRunComplete(summary: GameRunSummary): void {
     if (!this.activeProfile) {
       return;
@@ -261,6 +384,7 @@ class AppController {
     }
 
     const before = cloneProfile(this.activeProfile);
+    const wasMatchWin = summary.matchResult === "win";
 
     const statsApplied: Profile = {
       ...before,
@@ -270,7 +394,8 @@ class AppController {
         bestScore: Math.max(before.stats.bestScore, summary.score),
         bestCombo: Math.max(before.stats.bestCombo, summary.bestCombo),
         totalHits: before.stats.totalHits + summary.hits,
-        totalPerfects: before.stats.totalPerfects + summary.perfects
+        totalPerfects: before.stats.totalPerfects + summary.perfects,
+        matchWins: before.stats.matchWins + (wasMatchWin ? 1 : 0)
       }
     };
 
@@ -325,9 +450,11 @@ class AppController {
     }
 
     const profile = this.activeProfile;
+    const nextMonsterTeam = selectMonsterTeamForRun(profile.stats.runs);
     this.mode = "transition";
     this.lastOutcome = null;
     this.clearPendingTransition();
+    this.stopCutscene();
     this.stopGame();
 
     const wrapper = document.createElement("div");
@@ -339,7 +466,7 @@ class AppController {
           <div class="screen-eyebrow">Intermission</div>
           <h1>Training Complete</h1>
           <p class="screen-copy transition-screen__copy">
-            The real match is about to begin. Placeholder cutscene screen for future story beats.
+            The real match is about to begin. Win monster matches to forge escape seals and break the arena lock.
           </p>
         </div>
 
@@ -358,7 +485,7 @@ class AppController {
             <div class="transition-versus__teams">
               <span>${escapeHtml(profile.displayName)}</span>
               <span>vs</span>
-              <span>${escapeHtml(summary.monsterTeamName)}</span>
+              <span>${escapeHtml(nextMonsterTeam.name)}</span>
             </div>
             <div class="transition-versus__rules">
               <span>3 Periods</span>
@@ -378,10 +505,10 @@ class AppController {
           <div class="transition-skater-card transition-skater-card--away">
             <div class="transition-skater-card__label">Away</div>
             <div class="transition-skater-card__portrait-wrap">
-              <img src="${goblinPortraitUrl}" alt="${escapeHtml(summary.monsterTeamName)} portrait" />
+              <img src="${goblinPortraitUrl}" alt="${escapeHtml(nextMonsterTeam.name)} portrait" />
             </div>
-            <div class="transition-skater-card__name">${escapeHtml(summary.monsterTeamName)}</div>
-            <div class="transition-skater-card__sub">Monster Team</div>
+            <div class="transition-skater-card__name">${escapeHtml(nextMonsterTeam.name)}</div>
+            <div class="transition-skater-card__sub">${escapeHtml(nextMonsterTeam.scoutingReport)}</div>
           </div>
         </div>
 
@@ -405,7 +532,7 @@ class AppController {
     const token = this.pendingTransitionToken;
     let finished = false;
 
-      const beginMatch = (): void => {
+    const beginMatch = (): void => {
       if (finished) {
         return;
       }
@@ -472,6 +599,7 @@ class AppController {
     this.mode = "transition";
     this.lastOutcome = null;
     this.clearPendingTransition();
+    this.stopCutscene();
     this.stopGame();
 
     const tierLabel = event.threatTier === 1 ? "I" : String(event.threatTier);
@@ -622,14 +750,29 @@ class AppController {
     const progress = getLevelProgress(profile.xp);
     const isTraining = this.activePlaySessionKind === "training";
     const isSpellDemo = this.activePlaySessionKind === "spell_demo";
+    const opponentName = this.currentMonsterTeam?.name ?? "Cryptfang Ghouls";
+    const opponentScout = this.currentMonsterTeam?.scoutingReport ?? "Balanced threat pressure";
+    const opponentSuffix = isSpellDemo ? " • Spell Demo" : isTraining ? " • Training Mode" : ` • vs ${opponentName}`;
+    const showScout = !isSpellDemo && !isTraining;
+    const sealsForged = clamp(profile.stats.matchWins, 0, ESCAPE_SEAL_GOAL);
+    const sealsRemaining = Math.max(0, ESCAPE_SEAL_GOAL - sealsForged);
+    const storyLine = isSpellDemo
+      ? "Story paused in spell demo"
+      : isTraining
+        ? `Escape seals ${sealsForged}/${ESCAPE_SEAL_GOAL} • complete training to enter trials`
+        : `Escape seals ${sealsForged}/${ESCAPE_SEAL_GOAL}${
+            sealsRemaining > 0
+              ? ` • ${sealsRemaining} win${sealsRemaining === 1 ? "" : "s"} to break the arena lock`
+              : " • lock weak, keep pushing"
+          }`;
 
     this.screenLayer.innerHTML = `
       <div class="ui-float-bar">
         <div class="ui-float-meta">
           <div class="ui-float-title">${escapeHtml(profile.displayName)} <span>#${escapeHtml(profile.jerseyNumber)}</span></div>
-          <div class="ui-float-sub">${escapeHtml(classLabel(profile.classId))} • Lv ${profile.level} • ${progress.xpIntoLevel}/${progress.xpToNextLevel} XP${
-            isSpellDemo ? " • Spell Demo" : isTraining ? " • Training Mode" : ""
-          }</div>
+          <div class="ui-float-sub">${escapeHtml(classLabel(profile.classId))} • Lv ${profile.level} • ${progress.xpIntoLevel}/${progress.xpToNextLevel} XP${escapeHtml(opponentSuffix)}</div>
+          ${showScout ? `<div class="ui-float-scout">${escapeHtml(opponentScout)}</div>` : ""}
+          <div class="ui-float-story">${escapeHtml(storyLine)}</div>
         </div>
         <div class="ui-float-actions">
           <button type="button" class="ui-btn ui-btn-ghost" data-action="profiles">Profiles</button>
@@ -664,6 +807,10 @@ class AppController {
             <p><strong>Defense:</strong> When monsters have the puck, quick hits build <strong>takeaway charge</strong>. Fill it to win possession back.</p>
             <p><strong>Spell Demo:</strong> Use <strong>Spell Demo</strong> to loop faceoff rune casts at a slower pace. Practice tracing and center snap timing without match pressure.</p>
             <p><strong>Combo rule:</strong> Only hits in the <strong>first half</strong> of a gate timer build combo. Late hits still help a little, but they break the chain.</p>
+            <p><strong>Interludes:</strong> Short challenge breaks (Speed Burst, Rune Script, Ice Sprint) appear between gate spawns. Early runs get none or one, mid runs get two, late runs get three to break repetition without stopping flow.</p>
+            <p><strong>Story loop:</strong> You are rinkbound. Match wins forge escape seals. Use <strong>Play Again</strong> to enter short story cutscenes between runs.</p>
+            <p><strong>RSVP controls:</strong> Story text starts slower, then speeds up for tension. Use <kbd>Space</kbd> pause/resume, <kbd>R</kbd> replay panel, <kbd>Enter</kbd> fast-forward, and <kbd>Esc</kbd> skip.</p>
+            <p><strong>Opponents:</strong> Monster teams rotate as your run count climbs. Each squad has a different pressure profile, so read the scouting line before puck drop.</p>
             <p><strong>Rookie ward:</strong> Your first few matches are protected while you learn. After a milestone briefing, seal breach risk turns on and threat tiers begin escalating.</p>
             <p><strong>Difficulty arc:</strong> <strong>Period 1</strong> is forgiving, <strong>Period 2</strong> increases gate speed/pressure, and <strong>Period 3</strong> is the final push with tougher gates. If you get far ahead, monsters surge harder; if you fall behind, the game gives a small comeback assist.</p>
             <p><strong>Breach fail:</strong> If <strong>Arcane Shield</strong> hits zero, the seal breaks and the run ends immediately.</p>
@@ -1405,6 +1552,11 @@ class AppController {
           <button type="button" class="ui-btn" data-action="again">Play Again</button>
         </div>
       </div>
+      <div class="results-fixed-actions" role="group" aria-label="Results actions">
+        <button type="button" class="ui-btn ui-btn-ghost" data-action="profiles">Profiles</button>
+        <button type="button" class="ui-btn ui-btn-ghost" data-action="customize">Customize</button>
+        <button type="button" class="ui-btn" data-action="again">Play Again</button>
+      </div>
     `;
 
     this.screenLayer.replaceChildren(wrapper);
@@ -1445,14 +1597,20 @@ class AppController {
       scoreboardMount.replaceWith(sb.root);
     }
 
-    this.screenLayer.querySelector<HTMLButtonElement>('[data-action="profiles"]')?.addEventListener("click", () => {
-      this.showProfiles();
+    this.screenLayer.querySelectorAll<HTMLButtonElement>('[data-action="profiles"]').forEach((button) => {
+      button.addEventListener("click", () => {
+        this.showProfiles();
+      });
     });
-    this.screenLayer.querySelector<HTMLButtonElement>('[data-action="customize"]')?.addEventListener("click", () => {
-      this.showCustomize("results");
+    this.screenLayer.querySelectorAll<HTMLButtonElement>('[data-action="customize"]').forEach((button) => {
+      button.addEventListener("click", () => {
+        this.showCustomize("results");
+      });
     });
-    this.screenLayer.querySelector<HTMLButtonElement>('[data-action="again"]')?.addEventListener("click", () => {
-      this.startPlay();
+    this.screenLayer.querySelectorAll<HTMLButtonElement>('[data-action="again"]').forEach((button) => {
+      button.addEventListener("click", () => {
+        this.playBetweenMatchCutscene();
+      });
     });
   }
 }

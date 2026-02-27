@@ -42,6 +42,7 @@ export type ProfileStats = {
   bestCombo: number;
   totalHits: number;
   totalPerfects: number;
+  matchWins: number;
 };
 
 export type Profile = {
@@ -55,6 +56,7 @@ export type Profile = {
   level: number;
   perkPoints: number;
   perks: string[];
+  seenCutscenes: string[];
   unlockedCosmetics: CosmeticId[];
   equippedCosmetics: EquippedCosmetics;
   stats: ProfileStats;
@@ -123,6 +125,7 @@ export function createProfile(input: {
     level: 1,
     perkPoints: 0,
     perks: [],
+    seenCutscenes: [],
     unlockedCosmetics: [...STARTER_COSMETICS],
     equippedCosmetics: { ...DEFAULT_EQUIPPED_COSMETICS },
     stats: {
@@ -130,7 +133,8 @@ export function createProfile(input: {
       bestScore: 0,
       bestCombo: 0,
       totalHits: 0,
-      totalPerfects: 0
+      totalPerfects: 0,
+      matchWins: 0
     },
     createdAtMs: now,
     updatedAtMs: now

@@ -7,6 +7,11 @@ type TrailPoint = {
   age: number;
 };
 
+const TRAIL_MAX_AGE_SEC = 0.35;
+const TRAIL_SAMPLE_INTERVAL_SEC = 1 / 90;
+const TRAIL_SAMPLE_DISTANCE_SQ = 0.000006;
+const TRACKING_DOM_REFRESH_INTERVAL_SEC = 1 / 12;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -21,6 +26,13 @@ export class TrackingHUD {
   private readonly confFillEl: HTMLDivElement;
   private readonly confValueEl: HTMLSpanElement;
   private readonly debugEl: HTMLDivElement;
+  private trailSampleCooldown = 0;
+  private domRefreshCooldown = 0;
+  private lastTrailSampleX = 0.5;
+  private lastTrailSampleY = 0.5;
+  private lastConfWidth = "";
+  private lastConfText = "";
+  private lastDebugText = "";
 
   constructor(args: {
     provider: PuckProvider;
@@ -54,21 +66,51 @@ export class TrackingHUD {
     const vel = this.provider.getVelocity();
     const conf = clamp(this.provider.getConfidence(), 0, 1);
 
-    this.trail.push({ x: pos.x, y: pos.y, age: 0 });
-    if (this.trail.length > 32) {
-      this.trail.shift();
+    this.trailSampleCooldown = Math.max(0, this.trailSampleCooldown - dt);
+    const dx = pos.x - this.lastTrailSampleX;
+    const dy = pos.y - this.lastTrailSampleY;
+    const movedEnough = dx * dx + dy * dy >= TRAIL_SAMPLE_DISTANCE_SQ;
+    if (this.trailSampleCooldown <= 0 && (this.trail.length === 0 || movedEnough)) {
+      this.trail.push({ x: pos.x, y: pos.y, age: 0 });
+      if (this.trail.length > 32) {
+        this.trail.splice(0, this.trail.length - 32);
+      }
+      this.lastTrailSampleX = pos.x;
+      this.lastTrailSampleY = pos.y;
+      this.trailSampleCooldown = TRAIL_SAMPLE_INTERVAL_SEC;
     }
 
     for (let i = this.trail.length - 1; i >= 0; i -= 1) {
       this.trail[i].age += dt;
-      if (this.trail[i].age > 0.35) {
+      if (this.trail[i].age > TRAIL_MAX_AGE_SEC) {
         this.trail.splice(i, 1);
       }
     }
 
-    this.confFillEl.style.width = `${(conf * 100).toFixed(0)}%`;
-    this.confValueEl.textContent = `${(conf * 100).toFixed(0)}%`;
-    this.debugEl.textContent = `x:${pos.x.toFixed(3)}  y:${pos.y.toFixed(3)}  vx:${vel.x.toFixed(2)}  vy:${vel.y.toFixed(2)}`;
+    this.domRefreshCooldown = Math.max(0, this.domRefreshCooldown - dt);
+    if (this.domRefreshCooldown > 0) {
+      return;
+    }
+    this.domRefreshCooldown = TRACKING_DOM_REFRESH_INTERVAL_SEC;
+
+    const confPercent = Math.round(conf * 100);
+    const confWidth = `${confPercent}%`;
+    if (confWidth !== this.lastConfWidth) {
+      this.confFillEl.style.width = confWidth;
+      this.lastConfWidth = confWidth;
+    }
+
+    const confText = `${confPercent}%`;
+    if (confText !== this.lastConfText) {
+      this.confValueEl.textContent = confText;
+      this.lastConfText = confText;
+    }
+
+    const debugText = `x:${pos.x.toFixed(3)}  y:${pos.y.toFixed(3)}  vx:${vel.x.toFixed(2)}  vy:${vel.y.toFixed(2)}`;
+    if (debugText !== this.lastDebugText) {
+      this.debugEl.textContent = debugText;
+      this.lastDebugText = debugText;
+    }
   }
 
   renderPad(ctx: CanvasRenderingContext2D, padRect: Rect, timeSec: number): void {
@@ -129,7 +171,7 @@ export class TrackingHUD {
       const curr = this.trail[i];
       const p0 = padToPixel(padRect, prev);
       const p1 = padToPixel(padRect, curr);
-      const alpha = clamp(1 - curr.age / 0.35, 0, 1);
+      const alpha = clamp(1 - curr.age / TRAIL_MAX_AGE_SEC, 0, 1);
       const width = 1 + alpha * 5;
 
       ctx.strokeStyle = `rgba(212, 175, 55, ${(alpha * 0.18).toFixed(3)})`;
@@ -143,7 +185,7 @@ export class TrackingHUD {
 
     for (const node of this.trail) {
       const p = padToPixel(padRect, node);
-      const alpha = clamp(1 - node.age / 0.35, 0, 1);
+      const alpha = clamp(1 - node.age / TRAIL_MAX_AGE_SEC, 0, 1);
       if (alpha <= 0) {
         continue;
       }

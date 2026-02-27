@@ -15,9 +15,8 @@ export class MousePuckProvider implements PuckProvider {
   private readonly target: PuckPoint = { x: 0.5, y: 0.5 };
 
   private handlePointerMoveBound = (event: PointerEvent): void => {
-    const canvasRect = this.canvas.getBoundingClientRect();
-    const px = event.clientX - canvasRect.left;
-    const py = event.clientY - canvasRect.top;
+    const px = event.offsetX;
+    const py = event.offsetY;
     const pad = this.getPadBounds();
 
     if (pad.width <= 0 || pad.height <= 0) {
@@ -32,7 +31,7 @@ export class MousePuckProvider implements PuckProvider {
     this.canvas = canvas;
     this.getPadBounds = getPadBounds;
 
-    canvas.addEventListener("pointermove", this.handlePointerMoveBound);
+    canvas.addEventListener("pointermove", this.handlePointerMoveBound, { passive: true });
   }
 
   update(dt: number): void {
@@ -65,4 +64,3 @@ export class MousePuckProvider implements PuckProvider {
     this.canvas.removeEventListener("pointermove", this.handlePointerMoveBound);
   }
 }
-

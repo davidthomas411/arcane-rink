@@ -11,6 +11,7 @@ Fantasy hockey pad game prototype built with Vite + TypeScript.
 - Mouse puck tracking provider (`MousePuckProvider`), with provider abstraction for CV/WebSocket swap later
 - Arcane rink pad rendering with ice textures and rune gate target system
 - Hockey-style 3-period match loop (offense/defense possession, goals, momentum)
+- Run-based monster team rotation (different pressure profiles and archetypes)
 - Threat/seal system with breach fail state + cinematic outro
 - Rune faceoff spell mechanic (trace path, snap to center)
 - Spell Demo mode for practicing faceoff pacing

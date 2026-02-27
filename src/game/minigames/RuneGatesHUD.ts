@@ -15,6 +15,8 @@ type HudPortraitId = "PLAYER_A" | "PLAYER_K" | "GOBLIN" | null;
 type SidePortraitSlotRefs = {
   root: HTMLDivElement;
   imgEl: HTMLImageElement;
+  happyVideoEl: HTMLVideoElement;
+  angryVideoEl: HTMLVideoElement;
   fallbackEl: HTMLSpanElement;
   nameEl: HTMLSpanElement;
   sideEl: HTMLSpanElement;
@@ -50,8 +52,8 @@ type HitGrade = "PERFECT" | "GREAT" | "HIT";
 type ThreatPhase = "STABLE" | "CRACKING" | "BREACH";
 type MatchResult = "win" | "loss" | "tie";
 type Possession = "PLAYER" | "ENEMY";
-type FaceoffSpellStage = "TRACE" | "SNAP";
-type FaceoffSpellTrigger = "OPENING" | "PERIOD" | "GOAL_RESET";
+type FaceoffSpellStage = "APPROACH" | "TRACE" | "SNAP";
+type FaceoffSpellTrigger = "OPENING" | "PERIOD" | "GOAL_RESET" | "BREACH_SAVE";
 type GameSfxKey =
   | "offense"
   | "defense"
@@ -69,6 +71,7 @@ type PeriodScore = {
 };
 
 type DifficultyPace = "OPENING" | "PRESSURE" | "FINAL_PUSH";
+type InterludeChallengeId = "SPEED_BURST" | "RUNE_SCRIPT" | "ICE_SPRINT";
 
 type DifficultySnapshot = {
   pace: DifficultyPace;
@@ -95,11 +98,14 @@ type DifficultySnapshot = {
 type FaceoffSpellState = {
   trigger: FaceoffSpellTrigger;
   favoredPossession: Possession;
+  anchor: Point;
   stage: FaceoffSpellStage;
   nodes: Point[];
   currentNodeIndex: number;
   traceTolerancePx: number;
   snapTolerancePx: number;
+  approachDurationSec: number;
+  traceDurationSec: number;
   totalDurationSec: number;
   timeRemainingSec: number;
   snapCueDelaySec: number;
@@ -109,17 +115,218 @@ type FaceoffSpellState = {
   runeSpinSeed: number;
 };
 
+type InterludeScheduleEntry = {
+  progress: number;
+  challengeId: InterludeChallengeId;
+};
+
+type InterludeChallengeState = {
+  id: InterludeChallengeId;
+  label: string;
+  prompt: string;
+  durationSec: number;
+  timeRemainingSec: number;
+  introRemainingSec: number;
+  checkpoints: Point[];
+  currentCheckpointIndex: number;
+  checkpointRadiusScale: number;
+  hue: number;
+  rewardScore: number;
+  rewardCharge: number;
+  failPressure: number;
+  failIntegrity: number;
+  failTurnover: boolean;
+  successBanner: string;
+};
+
+type BreachFractureKind = "RADIAL" | "BRANCH" | "RING";
+
+type BreachFracturePath = {
+  kind: BreachFractureKind;
+  nodes: Point[];
+  activation: number;
+  major: boolean;
+  thickness: number;
+  maskPhase: number;
+};
+
+type RuntimeTexture = {
+  image: HTMLImageElement;
+  ready: boolean;
+};
+
+type BreachFrostSeed = {
+  lane: number;
+  riseRate: number;
+  drift: number;
+  size: number;
+  phase: number;
+};
+
+type BreachThemePalette = {
+  hairline: string;
+  hairlineMask: string;
+  leakCore: string;
+  leakOuter: string;
+  depthDark: string;
+  edgeLight: string;
+  frost: string;
+};
+
 const PLAYER_A_PORTRAIT_URL = new URL("../../../tmp/A.png", import.meta.url).href;
 const PLAYER_K_PORTRAIT_URL = new URL("../../../tmp/k.png", import.meta.url).href;
 const GOBLIN_PORTRAIT_URL = new URL("../../../tmp/G.png", import.meta.url).href;
-const BGM_TRACK_MODULES = import.meta.glob("../../../tmp/audio/bgm/*.{mp3,ogg,wav,m4a}", {
-  eager: true,
-  import: "default"
-}) as Record<string, string>;
+const GOBLIN_ANGRY_ANIM_URL = new URL("../../../animations/angry_goblin.mp4", import.meta.url).href;
+const GOBLIN_HAPPY_ANIM_URL = new URL("../../../animations/happy_goblin.mp4", import.meta.url).href;
+const BGM_TRACK_MODULES = import.meta.glob(
+  ["../../../audio/soundtracks/*.{mp3,ogg,wav,m4a}", "../../../tmp/audio/bgm/*.{mp3,ogg,wav,m4a}"],
+  {
+    eager: true,
+    import: "default"
+  }
+) as Record<string, string>;
 const BGM_TRACK_URLS = Object.entries(BGM_TRACK_MODULES)
   .sort(([a], [b]) => a.localeCompare(b))
   .map(([, url]) => url)
   .filter((url): url is string => typeof url === "string" && url.length > 0);
+const PUCK_HIT_SFX_URLS = [
+  new URL("../../../audio/puck/puck_hit_01.mp3", import.meta.url).href,
+  new URL("../../../audio/puck/puck_hit_02.mp3", import.meta.url).href,
+  new URL("../../../audio/puck/puck_hit_03.mp3", import.meta.url).href,
+  new URL("../../../audio/puck/puck_hit_04.wav", import.meta.url).href
+].filter((url): url is string => typeof url === "string" && url.length > 0);
+const BREACH_FISSURE_TEXTURE = createRuntimeTexture(new URL("../../../tmp/Ice004.png", import.meta.url).href);
+const BREACH_ROUGH_TEXTURE = createRuntimeTexture(
+  new URL("../../../tmp/Ice004_1K-JPG/Ice004_1K-JPG_Roughness.jpg", import.meta.url).href
+);
+const BREACH_DISPLACE_TEXTURE = createRuntimeTexture(
+  new URL("../../../tmp/Ice004_1K-JPG/Ice004_1K-JPG_Displacement.jpg", import.meta.url).href
+);
+const FACEOFF_SPOTS: Point[] = [
+  { x: 0.5, y: 0.5 },
+  { x: 0.24, y: 0.33 },
+  { x: 0.24, y: 0.67 },
+  { x: 0.76, y: 0.33 },
+  { x: 0.76, y: 0.67 }
+];
+const HUD_REFRESH_INTERVAL_SEC = 1 / 20;
+const ANNOUNCER_SFX_POOL_SIZE = 2;
+const PUCK_HIT_SFX_POOL_SIZE = 4;
+const FACEOFF_SPELL_PATTERNS: Point[][] = [
+  [
+    { x: -0.15, y: -0.19 },
+    { x: -0.04, y: -0.22 },
+    { x: 0.1, y: -0.16 },
+    { x: 0.18, y: -0.05 },
+    { x: 0.12, y: 0.07 },
+    { x: 0.02, y: 0.13 },
+    { x: -0.05, y: 0.09 },
+    { x: -0.01, y: 0.03 }
+  ],
+  [
+    { x: -0.18, y: 0.12 },
+    { x: -0.19, y: -0.01 },
+    { x: -0.11, y: -0.15 },
+    { x: 0.03, y: -0.2 },
+    { x: 0.17, y: -0.11 },
+    { x: 0.13, y: 0.03 },
+    { x: 0.03, y: 0.1 },
+    { x: -0.01, y: 0.03 }
+  ],
+  [
+    { x: -0.15, y: -0.05 },
+    { x: -0.06, y: -0.18 },
+    { x: 0.08, y: -0.14 },
+    { x: 0.16, y: -0.01 },
+    { x: 0.1, y: 0.12 },
+    { x: -0.03, y: 0.16 },
+    { x: -0.13, y: 0.07 },
+    { x: -0.01, y: 0.02 }
+  ],
+  [
+    { x: -0.2, y: -0.02 },
+    { x: -0.11, y: -0.17 },
+    { x: 0.04, y: -0.2 },
+    { x: 0.17, y: -0.09 },
+    { x: 0.16, y: 0.05 },
+    { x: 0.04, y: 0.15 },
+    { x: -0.09, y: 0.13 },
+    { x: -0.01, y: 0.02 }
+  ]
+];
+const RUNE_SCRIPT_PATHS: Point[][] = [
+  [
+    { x: 0.28, y: 0.82 },
+    { x: 0.5, y: 0.2 },
+    { x: 0.72, y: 0.82 },
+    { x: 0.62, y: 0.58 },
+    { x: 0.38, y: 0.58 }
+  ],
+  [
+    { x: 0.3, y: 0.2 },
+    { x: 0.3, y: 0.82 },
+    { x: 0.3, y: 0.52 },
+    { x: 0.72, y: 0.24 },
+    { x: 0.3, y: 0.52 },
+    { x: 0.72, y: 0.82 }
+  ],
+  [
+    { x: 0.24, y: 0.28 },
+    { x: 0.48, y: 0.2 },
+    { x: 0.72, y: 0.3 },
+    { x: 0.3, y: 0.72 },
+    { x: 0.54, y: 0.82 },
+    { x: 0.76, y: 0.7 }
+  ]
+];
+
+function createRuntimeTexture(url: string): RuntimeTexture {
+  const image = new Image();
+  image.decoding = "async";
+  const texture: RuntimeTexture = { image, ready: false };
+  image.addEventListener("load", () => {
+    texture.ready = true;
+  });
+  image.src = url;
+  return texture;
+}
+
+function drawTiledRuntimeTexture(
+  ctx: CanvasRenderingContext2D,
+  rect: Rect,
+  texture: RuntimeTexture,
+  args: {
+    alpha: number;
+    tileScale: number;
+    driftX?: number;
+    driftY?: number;
+    composite?: GlobalCompositeOperation;
+  }
+): void {
+  if (!texture.ready || texture.image.naturalWidth <= 0 || texture.image.naturalHeight <= 0) {
+    return;
+  }
+  const tileW = Math.max(24, texture.image.naturalWidth * args.tileScale);
+  const tileH = Math.max(24, texture.image.naturalHeight * args.tileScale);
+  const driftX = ((args.driftX ?? 0) % tileW + tileW) % tileW;
+  const driftY = ((args.driftY ?? 0) % tileH + tileH) % tileH;
+  const startX = rect.x - tileW + driftX;
+  const startY = rect.y - tileH + driftY;
+  const endX = rect.x + rect.width + tileW;
+  const endY = rect.y + rect.height + tileH;
+
+  ctx.save();
+  ctx.globalAlpha = args.alpha;
+  if (args.composite) {
+    ctx.globalCompositeOperation = args.composite;
+  }
+  for (let y = startY; y < endY; y += tileH) {
+    for (let x = startX; x < endX; x += tileW) {
+      ctx.drawImage(texture.image, x, y, tileW, tileH);
+    }
+  }
+  ctx.restore();
+}
 
 export type RuneGatesSessionSummary = {
   modeId: "RUNE_GATES_HUD";
@@ -143,6 +350,11 @@ export type RuneGatesSessionSummary = {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function seededUnit(seed: number): number {
+  const value = Math.sin(seed * 127.1 + 311.7) * 43758.5453123;
+  return value - Math.floor(value);
 }
 
 function formatClockMmSs(totalSeconds: number): string {
@@ -330,6 +542,12 @@ export class RuneGatesHUD {
   };
   private readonly gameSfxLastPlayedAt = new Map<GameSfxKey, number>();
   private readonly gameSfxLastClipIndex = new Map<GameSfxKey, number>();
+  private readonly sfxAudioPools = new Map<string, HTMLAudioElement[]>();
+  private readonly sfxAudioPoolCursor = new Map<string, number>();
+  private readonly puckHitSfxUrls = PUCK_HIT_SFX_URLS;
+  private puckHitSfxLastClipIndex = -1;
+  private puckHitSfxLastPlayedAt = -Infinity;
+  private readonly puckHitSfxCooldownMs = 90;
   private preStartCountdownActive = false;
   private preStartCountdownDurationSec = 3.2;
   private preStartCountdownRemainingSec = 0;
@@ -380,6 +598,25 @@ export class RuneGatesHUD {
   private momentumDifficultyCooldown = 0;
   private faceoffDemoCooldown = 0;
   private faceoffDemoRounds = 0;
+  private interludeChallenge: InterludeChallengeState | null = null;
+  private interludeCheckpointWasInside = false;
+  private interludeSchedule: InterludeScheduleEntry[] = [];
+  private nextInterludeScheduleIndex = 0;
+  private completedInterludes = 0;
+  private lastFaceoffSpotIndex = -1;
+  private breachRitualCooldown = 0;
+  private breachRitualSaves = 0;
+  private guestEmoteTimerId: number | null = null;
+  private guestEmoteToken = 0;
+  private breachVisualPropagation = 0;
+  private breachVisualStep = 0;
+  private breachRumbleCooldown = 0;
+  private crackPropagationCueLastAtMs = -Infinity;
+  private crackCueAudioContext: AudioContext | null = null;
+  private readonly crackPropagationCueCooldownMs = 320;
+  private readonly breachFracturePaths: BreachFracturePath[] = this.buildBreachFracturePaths();
+  private readonly breachFrostSeeds: BreachFrostSeed[] = this.buildBreachFrostSeeds();
+  private hudRefreshCooldown = 0;
 
   private readonly onKeyDownBound = (event: KeyboardEvent): void => {
     if (
@@ -456,7 +693,13 @@ export class RuneGatesHUD {
         ? `${this.playerLoadoutSummary.helmet} • ${this.playerLoadoutSummary.stick}`
         : "Starter gear"
     );
-    this.configureSidePortraitSlot(this.guestPortraitSlot, "GOBLIN", this.monsterTeam.shortName, "Away", "Bone mask • Hook stick");
+    this.configureSidePortraitSlot(
+      this.guestPortraitSlot,
+      "GOBLIN",
+      this.monsterTeam.shortName,
+      "Away",
+      this.monsterTeam.gearLabel
+    );
 
     this.comboFlashEl = document.createElement("div");
     this.comboFlashEl.className = "combo-flash";
@@ -487,6 +730,8 @@ export class RuneGatesHUD {
       <div class="side-skater__frame">
         <div class="side-skater__art">
           <img class="side-skater__image" alt="" />
+          <video class="side-skater__video side-skater__video--happy" muted playsinline preload="auto"></video>
+          <video class="side-skater__video side-skater__video--angry" muted playsinline preload="auto"></video>
           <span class="side-skater__fallback"></span>
         </div>
         <div class="side-skater__plate">
@@ -499,16 +744,27 @@ export class RuneGatesHUD {
     `;
 
     const imgEl = root.querySelector<HTMLImageElement>(".side-skater__image");
+    const happyVideoEl = root.querySelector<HTMLVideoElement>(".side-skater__video--happy");
+    const angryVideoEl = root.querySelector<HTMLVideoElement>(".side-skater__video--angry");
     const fallbackEl = root.querySelector<HTMLSpanElement>(".side-skater__fallback");
     const nameEl = root.querySelector<HTMLSpanElement>(".side-skater__name");
     const sideEl = root.querySelector<HTMLSpanElement>(".side-skater__side");
     const gearEl = root.querySelector<HTMLSpanElement>(".side-skater__gear");
     const stateEl = root.querySelector<HTMLSpanElement>(".side-skater__state");
-    if (!imgEl || !fallbackEl || !nameEl || !sideEl || !gearEl || !stateEl) {
+    if (!imgEl || !happyVideoEl || !angryVideoEl || !fallbackEl || !nameEl || !sideEl || !gearEl || !stateEl) {
       throw new Error("RuneGatesHUD side portrait slot failed to initialize");
     }
 
-    return { root, imgEl, fallbackEl, nameEl, sideEl, stateEl, gearEl };
+    happyVideoEl.loop = false;
+    happyVideoEl.playsInline = true;
+    happyVideoEl.muted = true;
+    happyVideoEl.hidden = true;
+    angryVideoEl.loop = false;
+    angryVideoEl.playsInline = true;
+    angryVideoEl.muted = true;
+    angryVideoEl.hidden = true;
+
+    return { root, imgEl, happyVideoEl, angryVideoEl, fallbackEl, nameEl, sideEl, stateEl, gearEl };
   }
 
   private configureSidePortraitSlot(
@@ -527,6 +783,21 @@ export class RuneGatesHUD {
     slot.gearEl.textContent = gearSummary;
     slot.fallbackEl.textContent = initials;
 
+    const supportsGoblinEmotes = portraitId === "GOBLIN" && sideLabel.toUpperCase() === "AWAY";
+    if (supportsGoblinEmotes) {
+      slot.happyVideoEl.src = GOBLIN_HAPPY_ANIM_URL;
+      slot.angryVideoEl.src = GOBLIN_ANGRY_ANIM_URL;
+      slot.root.dataset.emote = "idle";
+    } else {
+      slot.happyVideoEl.pause();
+      slot.happyVideoEl.removeAttribute("src");
+      slot.angryVideoEl.pause();
+      slot.angryVideoEl.removeAttribute("src");
+      delete slot.root.dataset.emote;
+    }
+    slot.happyVideoEl.hidden = true;
+    slot.angryVideoEl.hidden = true;
+
     if (portraitUrl) {
       slot.imgEl.src = portraitUrl;
       slot.imgEl.hidden = false;
@@ -538,6 +809,67 @@ export class RuneGatesHUD {
       slot.root.classList.remove("is-loaded");
       slot.root.classList.add("is-empty");
     }
+  }
+
+  private stopGuestEmote(resetToImage = true): void {
+    if (this.guestEmoteTimerId !== null) {
+      window.clearTimeout(this.guestEmoteTimerId);
+      this.guestEmoteTimerId = null;
+    }
+    this.guestEmoteToken += 1;
+    this.guestPortraitSlot.happyVideoEl.pause();
+    this.guestPortraitSlot.angryVideoEl.pause();
+    this.guestPortraitSlot.happyVideoEl.currentTime = 0;
+    this.guestPortraitSlot.angryVideoEl.currentTime = 0;
+    this.guestPortraitSlot.happyVideoEl.hidden = true;
+    this.guestPortraitSlot.angryVideoEl.hidden = true;
+    this.guestPortraitSlot.root.dataset.emote = "idle";
+    if (resetToImage && this.guestPortraitSlot.root.classList.contains("is-loaded")) {
+      this.guestPortraitSlot.imgEl.hidden = false;
+    }
+  }
+
+  private triggerGuestEmote(kind: "HAPPY" | "ANGRY"): void {
+    if (this.guestPortraitSlot.root.dataset.portraitId !== "GOBLIN") {
+      return;
+    }
+    const activeVideo = kind === "HAPPY" ? this.guestPortraitSlot.happyVideoEl : this.guestPortraitSlot.angryVideoEl;
+    const otherVideo = kind === "HAPPY" ? this.guestPortraitSlot.angryVideoEl : this.guestPortraitSlot.happyVideoEl;
+    if (!activeVideo.src) {
+      return;
+    }
+
+    this.stopGuestEmote(false);
+    const token = ++this.guestEmoteToken;
+    this.guestPortraitSlot.root.dataset.emote = kind.toLowerCase();
+    otherVideo.hidden = true;
+    otherVideo.pause();
+    otherVideo.currentTime = 0;
+    this.guestPortraitSlot.imgEl.hidden = true;
+
+    activeVideo.hidden = false;
+    activeVideo.currentTime = 0;
+    activeVideo.onended = () => {
+      if (token !== this.guestEmoteToken) {
+        return;
+      }
+      this.stopGuestEmote(true);
+    };
+
+    void activeVideo.play().catch(() => {
+      if (token !== this.guestEmoteToken) {
+        return;
+      }
+      this.stopGuestEmote(true);
+    });
+
+    const fallbackMs = Number.isFinite(activeVideo.duration) && activeVideo.duration > 0.2 ? activeVideo.duration * 1000 + 80 : 2200;
+    this.guestEmoteTimerId = window.setTimeout(() => {
+      if (token !== this.guestEmoteToken) {
+        return;
+      }
+      this.stopGuestEmote(true);
+    }, fallbackMs);
   }
 
   private updateSidePortraitHud(): void {
@@ -642,10 +974,20 @@ export class RuneGatesHUD {
     }
     this.gameSfxLastPlayedAt.clear();
     this.gameSfxLastClipIndex.clear();
+    this.puckHitSfxLastClipIndex = -1;
+    this.puckHitSfxLastPlayedAt = -Infinity;
     this.target = null;
     this.faceoffSpell = null;
     this.faceoffDemoCooldown = this.spellDemoMode ? 0.35 : 0;
     this.faceoffDemoRounds = 0;
+    this.interludeChallenge = null;
+    this.interludeCheckpointWasInside = false;
+    this.interludeSchedule = this.buildInterludeSchedule();
+    this.nextInterludeScheduleIndex = 0;
+    this.completedInterludes = 0;
+    this.lastFaceoffSpotIndex = -1;
+    this.breachRitualCooldown = 0;
+    this.breachRitualSaves = 0;
     this.wasInsideTarget = false;
     this.comboFlash = null;
     this.sessionDuration = this.spellDemoMode ? 9999 : this.trainingMode ? 18 : this.periodCount * this.periodDurationSec;
@@ -677,6 +1019,10 @@ export class RuneGatesHUD {
     this.breachOutroTimer = 0;
     this.breachOutroBurstStage = 0;
     this.breachOutroPower = 1;
+    this.breachVisualPropagation = clamp(Math.max(this.riftPressure * 0.6, 1 - this.sealIntegrity), 0, 1);
+    this.breachVisualStep = Math.floor(this.breachVisualPropagation * 10);
+    this.breachRumbleCooldown = 0;
+    this.crackPropagationCueLastAtMs = -Infinity;
     this.finishOutroTimer = 0;
     this.finishOutroBurstStage = 0;
     this.finishOutroPower = 1;
@@ -688,16 +1034,20 @@ export class RuneGatesHUD {
     this.statusEl.textContent = "";
     delete this.statusEl.dataset.tone;
     this.statusEl.classList.remove("visible");
+    this.stopGuestEmote(true);
     this.panelEl.dataset.training = this.trainingMode ? "true" : "false";
     this.panelEl.dataset.spellDemo = this.spellDemoMode ? "true" : "false";
+    this.hudRefreshCooldown = 0;
     this.updateCountdownDom();
-    this.updateHud();
+    this.updateHud(true);
   }
 
   update(dt: number): void {
     this.updateBackgroundMusic(dt);
+    this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
     this.possessionLockTimer = Math.max(0, this.possessionLockTimer - dt);
     this.momentumDifficultyCooldown = Math.max(0, this.momentumDifficultyCooldown - dt);
+    this.breachRitualCooldown = Math.max(0, this.breachRitualCooldown - dt);
     this.updateTransientStatus(dt);
 
     if (this.comboFlash) {
@@ -707,6 +1057,7 @@ export class RuneGatesHUD {
       }
     }
     this.updateComboFlashDom();
+    this.updateBreachVisualState(dt);
 
     if (this.preStartCountdownActive) {
       this.updatePreStartCountdown(dt);
@@ -716,6 +1067,12 @@ export class RuneGatesHUD {
 
     if (this.faceoffSpell) {
       this.updateFaceoffSpell(dt);
+      this.updateHud();
+      return;
+    }
+
+    if (this.interludeChallenge) {
+      this.updateInterludeChallenge(dt);
       this.updateHud();
       return;
     }
@@ -734,6 +1091,10 @@ export class RuneGatesHUD {
 
     if (!this.trainingMode) {
       this.updateTension(dt);
+    }
+    if (this.faceoffSpell) {
+      this.updateHud();
+      return;
     }
     if (this.ended) {
       this.updateEndedState(dt);
@@ -773,6 +1134,12 @@ export class RuneGatesHUD {
       this.statusEl.classList.remove("visible");
       this.flashCombo("FINAL HORN", finalResult === "win" ? "great" : finalResult === "tie" ? "hit" : "late");
       this.updateEndedState(dt);
+      this.updateHud();
+      return;
+    }
+
+    this.maybeStartInterludeChallenge();
+    if (this.interludeChallenge) {
       this.updateHud();
       return;
     }
@@ -824,6 +1191,10 @@ export class RuneGatesHUD {
         this.spawnTarget();
       }
     }
+    if (this.faceoffSpell) {
+      this.updateHud();
+      return;
+    }
 
     if (this.ended) {
       this.updateEndedState(dt);
@@ -858,6 +1229,11 @@ export class RuneGatesHUD {
 
     if (this.faceoffSpell) {
       this.renderFaceoffSpell(ctx, padRect, timeSec, this.faceoffSpell);
+      return;
+    }
+
+    if (this.interludeChallenge) {
+      this.renderInterludeChallenge(ctx, padRect, timeSec, this.interludeChallenge);
       return;
     }
 
@@ -1176,6 +1552,23 @@ export class RuneGatesHUD {
       this.introAudio = null;
     }
     this.stopBackgroundMusic();
+    this.stopGuestEmote(false);
+    this.homePortraitSlot.happyVideoEl.pause();
+    this.homePortraitSlot.happyVideoEl.removeAttribute("src");
+    this.homePortraitSlot.angryVideoEl.pause();
+    this.homePortraitSlot.angryVideoEl.removeAttribute("src");
+    this.guestPortraitSlot.happyVideoEl.pause();
+    this.guestPortraitSlot.happyVideoEl.removeAttribute("src");
+    this.guestPortraitSlot.angryVideoEl.pause();
+    this.guestPortraitSlot.angryVideoEl.removeAttribute("src");
+    for (const pool of this.sfxAudioPools.values()) {
+      for (const audio of pool) {
+        audio.pause();
+        audio.src = "";
+      }
+    }
+    this.sfxAudioPools.clear();
+    this.sfxAudioPoolCursor.clear();
     window.removeEventListener("keydown", this.onKeyDownBound);
     this.panelEl.remove();
     this.homePortraitSlot.root.remove();
@@ -1183,6 +1576,10 @@ export class RuneGatesHUD {
     this.countdownEl.remove();
     this.comboFlashEl.remove();
     this.statusEl.remove();
+    if (this.crackCueAudioContext && this.crackCueAudioContext.state !== "closed") {
+      void this.crackCueAudioContext.close();
+      this.crackCueAudioContext = null;
+    }
   }
 
   private startPreStartCountdown(durationSec: number): void {
@@ -1199,9 +1596,7 @@ export class RuneGatesHUD {
     this.preStartCountdownRemainingSec = 0;
     this.preStartCountdownSyncedToIntro = false;
     this.updateCountdownDom();
-    if (this.trainingMode && !this.ended) {
-      this.showStatus("Training mode • no penalties, just practice hits", "offense", 1.2);
-    } else if (!this.ended && this.currentPeriod === 1) {
+    if (!this.ended && this.currentPeriod === 1) {
       this.startFaceoffSpell("OPENING", "PLAYER");
     }
   }
@@ -1294,21 +1689,348 @@ export class RuneGatesHUD {
     this.countdownEl.style.transform = `translate(-50%, calc(-50% - ${lift}px)) scale(${scale.toFixed(3)})`;
   }
 
-  private buildFaceoffSpellNodes(seed: number): Point[] {
-    const nodes: Point[] = [];
-    const nodeCount = 8;
-    const turns = 1.22 + Math.sin(seed * Math.PI * 2) * 0.18;
-    for (let i = 0; i < nodeCount; i += 1) {
-      const t = nodeCount <= 1 ? 1 : i / (nodeCount - 1);
-      const angle = -Math.PI * 0.62 + t * Math.PI * 2 * turns;
-      const radial = 0.24 - t * 0.14;
-      const wobble = Math.sin((t * 4.6 + seed) * Math.PI * 2) * 0.012;
-      const radius = radial + wobble;
-      const x = clamp(0.5 + Math.cos(angle) * radius * 0.68, 0.18, 0.82);
-      const y = clamp(0.5 + Math.sin(angle) * radius * 1.08, 0.12, 0.88);
-      nodes.push({ x, y });
+  private getRandomFaceoffAnchor(): Point {
+    const spots = FACEOFF_SPOTS;
+    if (spots.length === 0) {
+      return { x: 0.5, y: 0.5 };
+    }
+    let index = Math.floor(Math.random() * spots.length);
+    if (spots.length > 1 && index === this.lastFaceoffSpotIndex) {
+      index = (index + 1 + Math.floor(Math.random() * (spots.length - 1))) % spots.length;
+    }
+    this.lastFaceoffSpotIndex = index;
+    return spots[index] ?? { x: 0.5, y: 0.5 };
+  }
+
+  private buildFaceoffSpellNodes(seed: number, anchor: Point): Point[] {
+    const patterns = FACEOFF_SPELL_PATTERNS;
+    const variantIndex = Math.floor(seededUnit(seed * 3.17 + 0.91) * patterns.length);
+    const template = patterns[variantIndex] ?? patterns[0] ?? [{ x: 0, y: 0 }];
+    const mirrorX = seededUnit(seed * 7.03 + 1.8) > 0.5 ? -1 : 1;
+    const rotation = (seededUnit(seed * 5.11 + 2.4) - 0.5) * Math.PI * 0.9;
+    const scaleX = 0.95 + seededUnit(seed * 11.9 + 4.4) * 0.2;
+    const scaleY = 0.94 + seededUnit(seed * 13.6 + 6.2) * 0.22;
+    const jitterRadius = 0.005 + seededUnit(seed * 17.2 + 9.1) * 0.004;
+    const cosRot = Math.cos(rotation);
+    const sinRot = Math.sin(rotation);
+    const nodes: Point[] = template.map((base, index) => {
+      const progress = template.length <= 1 ? 1 : index / (template.length - 1);
+      const jitterAngle = seededUnit(seed * 101.7 + index * 33.1) * Math.PI * 2;
+      const jitterScale = 1 - progress * 0.88;
+      const jitter = jitterRadius * jitterScale;
+      const localX = base.x * mirrorX * scaleX + Math.cos(jitterAngle) * jitter;
+      const localY = base.y * scaleY + Math.sin(jitterAngle) * jitter;
+      const x = localX * cosRot - localY * sinRot;
+      const y = localX * sinRot + localY * cosRot;
+      return {
+        x: clamp(anchor.x + x * 0.72, 0.1, 0.9),
+        y: clamp(anchor.y + y * 1.08, 0.12, 0.88)
+      };
+    });
+
+    // Keep the final trace node close to center so the snap cue flow stays readable.
+    const lastIndex = nodes.length - 1;
+    if (lastIndex >= 0) {
+      const finalAngle = seededUnit(seed * 19.7 + 2.3) * Math.PI * 2;
+      const finalRadius = 0.012 + seededUnit(seed * 23.3 + 7.6) * 0.012;
+      const finalNode: Point = {
+        x: clamp(anchor.x + Math.cos(finalAngle) * finalRadius * 0.72, 0.1, 0.9),
+        y: clamp(anchor.y + Math.sin(finalAngle) * finalRadius * 1.08, 0.12, 0.88)
+      };
+      nodes[lastIndex] = finalNode;
+      if (lastIndex > 0) {
+        const preNode = nodes[lastIndex - 1];
+        nodes[lastIndex - 1] = {
+          x: clamp(preNode.x * 0.46 + finalNode.x * 0.54, 0.1, 0.9),
+          y: clamp(preNode.y * 0.46 + finalNode.y * 0.54, 0.12, 0.88)
+        };
+      }
     }
     return nodes;
+  }
+
+  private buildInterludeSchedule(): InterludeScheduleEntry[] {
+    if (this.trainingMode || this.spellDemoMode) {
+      return [];
+    }
+    const run = this.playerRunCount;
+    const base: InterludeScheduleEntry[] =
+      run < 2
+        ? []
+        : run < 6
+          ? [{ progress: 0.62, challengeId: "SPEED_BURST" }]
+          : run < 12
+          ? [
+              { progress: 0.34, challengeId: "SPEED_BURST" },
+              { progress: 0.74, challengeId: "RUNE_SCRIPT" }
+            ]
+          : [
+              { progress: 0.22, challengeId: "SPEED_BURST" },
+              { progress: 0.5, challengeId: "RUNE_SCRIPT" },
+              { progress: 0.8, challengeId: "ICE_SPRINT" }
+            ];
+
+    if (run >= 16 && base.length >= 3) {
+      const openerVariant: InterludeChallengeId = seededUnit(run * 4.21 + 1.13) > 0.5 ? "SPEED_BURST" : "ICE_SPRINT";
+      base[0] = { ...base[0], challengeId: openerVariant };
+    }
+
+    const avoidBand = 0.045;
+    const periodCuts = [1 / 3, 2 / 3];
+    return base
+      .map((entry, index) => {
+        const jitterSpan = run < 3 ? 0.03 : 0.05;
+        const jitter = (seededUnit(run * 17.1 + index * 9.3) - 0.5) * jitterSpan;
+        let progress = clamp(entry.progress + jitter, 0.16 + index * 0.06, 0.9);
+        for (const cut of periodCuts) {
+          if (Math.abs(progress - cut) < avoidBand) {
+            progress = clamp(progress + (progress < cut ? -avoidBand : avoidBand), 0.16, 0.9);
+          }
+        }
+        return { progress, challengeId: entry.challengeId };
+      })
+      .sort((a, b) => a.progress - b.progress);
+  }
+
+  private buildSpeedBurstCheckpoints(seed: number): Point[] {
+    const puck = this.provider.getPosition();
+    const points: Point[] = [{ x: clamp(puck.x, 0.14, 0.86), y: clamp(puck.y, 0.14, 0.86) }];
+    const count = this.isRookieWardActive() ? 5 : 6;
+    for (let i = 1; i < count; i += 1) {
+      const prev = points[i - 1] ?? { x: 0.5, y: 0.5 };
+      const angle = seededUnit(seed * 9.7 + i * 2.3) * Math.PI * 2;
+      const step = 0.18 + seededUnit(seed * 11.3 + i * 3.8) * 0.11;
+      const next: Point = {
+        x: clamp(prev.x + Math.cos(angle) * step, 0.12, 0.88),
+        y: clamp(prev.y + Math.sin(angle) * step, 0.12, 0.88)
+      };
+      points.push(next);
+    }
+    return points;
+  }
+
+  private buildIceSprintCheckpoints(seed: number): Point[] {
+    const puck = this.provider.getPosition();
+    const direction = puck.x <= 0.5 ? 1 : -1;
+    const startX = clamp(puck.x, 0.14, 0.86);
+    const ys = [0.22, 0.76, 0.32, 0.68, 0.5];
+    const points: Point[] = [{ x: startX, y: clamp(puck.y, 0.14, 0.86) }];
+    for (let i = 0; i < ys.length; i += 1) {
+      const t = (i + 1) / ys.length;
+      const laneY = ys[i] ?? 0.5;
+      const jitter = (seededUnit(seed * 7.7 + i * 1.3) - 0.5) * 0.08;
+      points.push({
+        x: clamp(startX + direction * (0.14 + t * 0.66) + jitter * 0.24, 0.1, 0.9),
+        y: clamp(laneY + jitter, 0.1, 0.9)
+      });
+    }
+    return points;
+  }
+
+  private buildRuneScriptCheckpoints(seed: number): Point[] {
+    const templates = RUNE_SCRIPT_PATHS;
+    const index = Math.floor(seededUnit(seed * 3.3 + 0.7) * templates.length);
+    const template = templates[index] ?? templates[0] ?? [{ x: 0.5, y: 0.5 }];
+    const mirror = seededUnit(seed * 5.9 + 3.1) > 0.5 ? -1 : 1;
+    const jitterAmount = 0.018;
+    return template.map((node, i) => {
+      const centerX = 0.5;
+      const mirroredX = centerX + (node.x - centerX) * mirror;
+      const jitterAngle = seededUnit(seed * 12.7 + i * 2.1) * Math.PI * 2;
+      const jitter = jitterAmount * (1 - i / Math.max(1, template.length - 1));
+      return {
+        x: clamp(mirroredX + Math.cos(jitterAngle) * jitter, 0.1, 0.9),
+        y: clamp(node.y + Math.sin(jitterAngle) * jitter, 0.1, 0.9)
+      };
+    });
+  }
+
+  private maybeStartInterludeChallenge(): void {
+    if (
+      this.trainingMode ||
+      this.spellDemoMode ||
+      this.ended ||
+      this.preStartCountdownActive ||
+      this.faceoffSpell !== null ||
+      this.interludeChallenge !== null
+    ) {
+      return;
+    }
+    const nextEntry = this.interludeSchedule[this.nextInterludeScheduleIndex];
+    if (!nextEntry) {
+      return;
+    }
+    if (this.getMatchProgress() < nextEntry.progress) {
+      return;
+    }
+    if (this.target && this.target.age < this.target.lifetime * 0.72) {
+      return;
+    }
+
+    this.nextInterludeScheduleIndex += 1;
+    this.startInterludeChallenge(nextEntry.challengeId);
+  }
+
+  private startInterludeChallenge(id: InterludeChallengeId): void {
+    const seed = this.playerRunCount * 31.7 + (this.sessionDuration - this.timeRemaining) * 2.3 + this.completedInterludes * 9.1;
+    let challenge: InterludeChallengeState;
+    if (id === "RUNE_SCRIPT") {
+      challenge = {
+        id,
+        label: "Rune Script",
+        prompt: "Trace the large rune path in order",
+        durationSec: this.isRookieWardActive() ? 10.8 : 9.6,
+        timeRemainingSec: this.isRookieWardActive() ? 10.8 : 9.6,
+        introRemainingSec: 1.5,
+        checkpoints: this.buildRuneScriptCheckpoints(seed),
+        currentCheckpointIndex: 0,
+        checkpointRadiusScale: this.isRookieWardActive() ? 0.085 : 0.074,
+        hue: 282,
+        rewardScore: 320,
+        rewardCharge: 0.72,
+        failPressure: 0.05,
+        failIntegrity: 0.024,
+        failTurnover: false,
+        successBanner: "RUNE MASTERED"
+      };
+    } else if (id === "ICE_SPRINT") {
+      challenge = {
+        id,
+        label: "Ice Sprint",
+        prompt: "Race lane-to-lane before the horn",
+        durationSec: this.isRookieWardActive() ? 8.3 : 7.2,
+        timeRemainingSec: this.isRookieWardActive() ? 8.3 : 7.2,
+        introRemainingSec: 1.2,
+        checkpoints: this.buildIceSprintCheckpoints(seed),
+        currentCheckpointIndex: 0,
+        checkpointRadiusScale: this.isRookieWardActive() ? 0.092 : 0.082,
+        hue: 188,
+        rewardScore: 280,
+        rewardCharge: 0.62,
+        failPressure: 0.065,
+        failIntegrity: 0.03,
+        failTurnover: true,
+        successBanner: "SPRINT WON"
+      };
+    } else {
+      challenge = {
+        id: "SPEED_BURST",
+        label: "Speed Burst",
+        prompt: "Chain quick gates at max tempo",
+        durationSec: this.isRookieWardActive() ? 8.6 : 7.4,
+        timeRemainingSec: this.isRookieWardActive() ? 8.6 : 7.4,
+        introRemainingSec: 1.1,
+        checkpoints: this.buildSpeedBurstCheckpoints(seed),
+        currentCheckpointIndex: 0,
+        checkpointRadiusScale: this.isRookieWardActive() ? 0.09 : 0.078,
+        hue: 200,
+        rewardScore: 250,
+        rewardCharge: 0.58,
+        failPressure: 0.055,
+        failIntegrity: 0.02,
+        failTurnover: false,
+        successBanner: "TEMPO SURGE"
+      };
+    }
+
+    this.interludeChallenge = challenge;
+    this.interludeCheckpointWasInside = false;
+    this.target = null;
+    this.wasInsideTarget = false;
+    this.spawnDelay = 0.16;
+    this.combo = 0;
+    this.flashCombo(challenge.label.toUpperCase(), "hit");
+    this.showStatus(`${challenge.label} • ${challenge.prompt}`, this.possession === "PLAYER" ? "offense" : "defense", 1.12);
+    const pad = this.getPadBounds();
+    const cx = pad.x + pad.width * 0.5;
+    const cy = pad.y + pad.height * 0.5;
+    this.effects.spawnShockwave(cx, cy, challenge.hue, 1.15);
+    this.effects.triggerShake(0.22);
+  }
+
+  private resolveInterludeChallenge(success: boolean): void {
+    const challenge = this.interludeChallenge;
+    if (!challenge) {
+      return;
+    }
+
+    const pad = this.getPadBounds();
+    const cx = pad.x + pad.width * 0.5;
+    const cy = pad.y + pad.height * 0.5;
+
+    if (success) {
+      this.completedInterludes += 1;
+      const timeBonus = Math.round(challenge.timeRemainingSec * 32);
+      this.score += challenge.rewardScore + timeBonus;
+      this.addPlayerAttackCharge(challenge.rewardCharge + clamp(challenge.timeRemainingSec / challenge.durationSec, 0, 1) * 0.14);
+      this.riftPressure = clamp(this.riftPressure - 0.07, 0, 1);
+      this.sealIntegrity = clamp(this.sealIntegrity + 0.03, 0, 1);
+      this.applyThreatSafetyRails();
+      this.flashCombo(challenge.successBanner, "great");
+      this.showStatus(`${challenge.label} clear • momentum gained`, this.possession === "PLAYER" ? "offense" : "goal", 1.05);
+      this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.06, challenge.successBanner, challenge.hue);
+      this.effects.spawnShockwave(cx, cy, challenge.hue, 1.42);
+      this.effects.triggerShake(0.38);
+    } else {
+      this.riftPressure = clamp(this.riftPressure + challenge.failPressure, 0, 1);
+      this.sealIntegrity = clamp(this.sealIntegrity - challenge.failIntegrity, 0, 1);
+      this.applyThreatSafetyRails();
+      this.addEnemyAttackCharge(0.18 + (challenge.id === "ICE_SPRINT" ? 0.14 : 0.08));
+      if (challenge.failTurnover && this.possession === "PLAYER" && !this.ended) {
+        this.changePossession("ENEMY", "TURNOVER");
+      }
+      this.flashCombo(`${challenge.label.toUpperCase()} FAILED`, "late");
+      this.showStatus(`${challenge.label} failed • pressure rises`, "danger", 1.05);
+      this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.06, "CHALLENGE LOST", 18);
+      this.effects.spawnShockwave(cx, cy, 14, 1.24);
+      this.effects.triggerShake(0.44);
+    }
+
+    this.interludeChallenge = null;
+    this.interludeCheckpointWasInside = false;
+    if (!this.ended && this.faceoffSpell === null) {
+      this.spawnDelay = Math.min(this.spawnDelay, 0.12);
+    }
+  }
+
+  private updateInterludeChallenge(dt: number): void {
+    const challenge = this.interludeChallenge;
+    if (!challenge || this.ended) {
+      return;
+    }
+
+    if (challenge.introRemainingSec > 0) {
+      challenge.introRemainingSec = Math.max(0, challenge.introRemainingSec - dt);
+      return;
+    }
+
+    challenge.timeRemainingSec = Math.max(0, challenge.timeRemainingSec - dt);
+    const checkpoint = challenge.checkpoints[challenge.currentCheckpointIndex];
+    if (checkpoint) {
+      const pad = this.getPadBounds();
+      const puckPx = padToPixel(pad, this.provider.getPosition());
+      const checkpointPx = padToPixel(pad, checkpoint);
+      const radiusPx = Math.min(pad.width, pad.height) * challenge.checkpointRadiusScale;
+      const dist = Math.hypot(puckPx.x - checkpointPx.x, puckPx.y - checkpointPx.y);
+      const inside = dist <= radiusPx;
+
+      if (inside && !this.interludeCheckpointWasInside) {
+        challenge.currentCheckpointIndex += 1;
+        this.interludeCheckpointWasInside = true;
+        this.effects.spawnHitBurst(checkpointPx.x, checkpointPx.y, challenge.hue, 1.1);
+        this.playPuckHitSfx(0.75);
+        if (challenge.currentCheckpointIndex >= challenge.checkpoints.length) {
+          this.resolveInterludeChallenge(true);
+          return;
+        }
+      } else if (!inside) {
+        this.interludeCheckpointWasInside = false;
+      }
+    }
+
+    if (challenge.timeRemainingSec <= 0) {
+      this.resolveInterludeChallenge(false);
+    }
   }
 
   private getPeriodFaceoffFavoredPossession(): Possession {
@@ -1326,37 +2048,54 @@ export class RuneGatesHUD {
     if (this.ended) {
       return;
     }
-    if (this.trainingMode) {
-      this.changePossession(favoredPossession, "FACEOFF", { fromFaceoffResolution: true });
-      return;
-    }
 
     const difficulty = this.getDifficultySnapshot();
     const pad = this.getPadBounds();
     const minDim = Math.max(240, Math.min(pad.width, pad.height));
+    const breachRitual = trigger === "BREACH_SAVE";
+    const centerIceFaceoff = trigger === "GOAL_RESET";
+    const anchor = breachRitual || centerIceFaceoff ? { x: 0.5, y: 0.5 } : this.getRandomFaceoffAnchor();
+    const approachDuration = 0;
     const openingBonus = trigger === "OPENING" ? 0.35 : 0;
     const rookieBonus = this.isRookieWardActive() ? 0.4 : 0;
     const demoBonus = this.spellDemoMode ? 0.95 : 0;
-    const traceDuration = clamp(2.25 + openingBonus + rookieBonus + demoBonus - difficulty.baseIntensity * 0.25, 1.7, 4.4);
-    const snapWindow = clamp(
-      0.72 + (this.isRookieWardActive() ? 0.22 : 0) + (this.spellDemoMode ? 0.3 : 0) - difficulty.baseIntensity * 0.06,
-      0.55,
-      1.45
+    const ritualBonus = breachRitual ? 0.78 : 0;
+    const traceDuration = clamp(
+      2.25 + openingBonus + rookieBonus + demoBonus + ritualBonus - difficulty.baseIntensity * (breachRitual ? 0.16 : 0.25),
+      1.7,
+      breachRitual ? 4.8 : 4.4
     );
-    const cueDelay = clamp(0.34 + (this.spellDemoMode ? 0.18 : 0) - difficulty.baseIntensity * 0.06, 0.2, 0.7);
-    const centerHold = this.isRookieWardActive() || this.spellDemoMode ? 0.11 : 0.145;
+    const snapWindow = clamp(
+      0.72 +
+        (this.isRookieWardActive() ? 0.22 : 0) +
+        (this.spellDemoMode ? 0.3 : 0) +
+        (breachRitual ? 0.3 : 0) -
+        difficulty.baseIntensity * (breachRitual ? 0.035 : 0.06),
+      0.55,
+      breachRitual ? 1.6 : 1.45
+    );
+    const cueDelay = clamp(
+      0.34 + (this.spellDemoMode ? 0.18 : 0) + (breachRitual ? 0.08 : 0) - difficulty.baseIntensity * (breachRitual ? 0.03 : 0.06),
+      0.2,
+      breachRitual ? 0.82 : 0.7
+    );
+    const centerHold = this.isRookieWardActive() || this.spellDemoMode || breachRitual ? 0.11 : 0.145;
     const runeSpinSeed = Math.random() * 1000;
     const totalDurationSec = traceDuration + cueDelay + snapWindow;
+    const toleranceBoost = breachRitual ? 0.014 : 0;
     this.faceoffSpell = {
       trigger,
       favoredPossession,
-      stage: "TRACE",
-      nodes: this.buildFaceoffSpellNodes(runeSpinSeed),
+      anchor,
+      stage: "APPROACH",
+      nodes: this.buildFaceoffSpellNodes(runeSpinSeed, anchor),
       currentNodeIndex: 0,
-      traceTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.09),
-      snapTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.096),
+      traceTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.09) + minDim * toleranceBoost,
+      snapTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.096) + minDim * toleranceBoost,
+      approachDurationSec: approachDuration,
+      traceDurationSec: traceDuration,
       totalDurationSec,
-      timeRemainingSec: traceDuration,
+      timeRemainingSec: 0,
       snapCueDelaySec: cueDelay,
       snapWindowRemainingSec: snapWindow,
       centerHoldSec: 0,
@@ -1370,10 +2109,19 @@ export class RuneGatesHUD {
     this.combo = 0;
     this.possessionLockTimer = 0;
 
+    if (breachRitual) {
+      this.flashCombo("TOUCH RITUAL START", "miss");
+      this.showStatus("Emergency ritual • touch the start glyph to begin tracing", "danger", 1.12);
+      this.playGameSfx("warning");
+      return;
+    }
+
     if (trigger === "OPENING") {
-      this.flashCombo(this.spellDemoMode ? "SPELL DEMO" : "CAST FACEOFF RUNE", "combo");
+      this.flashCombo(this.spellDemoMode ? "SPELL DEMO" : "FACEOFF GLYPH", "combo");
       this.showStatus(
-        this.spellDemoMode ? "Demo pace • trace rune then snap center" : "Trace the rune path, then snap to center",
+        this.spellDemoMode
+          ? "Demo pace • touch the start glyph, then trace + snap"
+          : "Touch the highlighted start glyph, then trace + snap",
         "offense",
         this.spellDemoMode ? 0.92 : 1.1
       );
@@ -1383,15 +2131,21 @@ export class RuneGatesHUD {
     if (trigger === "PERIOD") {
       this.flashCombo("PERIOD FACEOFF", "hit");
       this.showStatus(
-        `${this.getPeriodLabel(this.currentPeriod)} period draw • winner takes puck`,
+        `${this.getPeriodLabel(this.currentPeriod)} period draw • touch the start glyph`,
         favoredPossession === "PLAYER" ? "offense" : "defense",
         1.05
       );
       return;
     }
 
-    this.flashCombo("CENTER FACEOFF", "hit");
-    this.showStatus("Rune draw • winner takes puck", favoredPossession === "PLAYER" ? "offense" : "defense", 0.95);
+    this.flashCombo(centerIceFaceoff ? "CENTER ICE FACEOFF" : "FACEOFF RESET", "hit");
+    this.showStatus(
+      centerIceFaceoff
+        ? "Goal reset • touch the start glyph at center ice"
+        : "Rune draw reset • touch the start glyph",
+      favoredPossession === "PLAYER" ? "offense" : "defense",
+      0.95
+    );
   }
 
   private updateFaceoffSpell(dt: number): void {
@@ -1402,6 +2156,35 @@ export class RuneGatesHUD {
 
     const pad = this.getPadBounds();
     const puckPx = padToPixel(pad, this.provider.getPosition());
+
+    if (spell.stage === "APPROACH") {
+      const startNode = spell.nodes[0];
+      const startPx = padToPixel(pad, startNode);
+      const distToStart = Math.hypot(puckPx.x - startPx.x, puckPx.y - startPx.y);
+      const startTolerance = spell.traceTolerancePx * 1.08;
+      if (distToStart <= startTolerance) {
+        this.effects.spawnHitBurst(startPx.x, startPx.y, spell.trigger === "BREACH_SAVE" ? 22 : 198, 0.86);
+        spell.currentNodeIndex = Math.min(1, Math.max(0, spell.nodes.length - 1));
+        if (spell.currentNodeIndex >= spell.nodes.length) {
+          spell.stage = "SNAP";
+          spell.timeRemainingSec = spell.snapCueDelaySec + spell.snapWindowRemainingSec;
+          this.flashCombo("SNAP TO CENTER", "great");
+          this.showStatus("Hold... then snap to center on cue", "offense", 0.88);
+          return;
+        }
+        spell.stage = "TRACE";
+        spell.timeRemainingSec = spell.traceDurationSec;
+        if (spell.trigger === "BREACH_SAVE") {
+          this.flashCombo("TRACE TO SEAL", "great");
+          this.showStatus("Trace the ritual now", "danger", 0.95);
+        } else {
+          this.flashCombo("TRACE THE RUNE", "great");
+          this.showStatus("Trace the rune path", "offense", 0.85);
+        }
+      }
+      return;
+    }
+
     spell.timeRemainingSec = Math.max(0, spell.timeRemainingSec - dt);
 
     if (spell.stage === "TRACE") {
@@ -1429,8 +2212,9 @@ export class RuneGatesHUD {
       spell.snapCueDelaySec = Math.max(0, spell.snapCueDelaySec - dt);
       spell.timeRemainingSec = spell.snapCueDelaySec + spell.snapWindowRemainingSec;
       if (spell.snapCueDelaySec <= 0.001) {
-        const cx = pad.x + pad.width * 0.5;
-        const cy = pad.y + pad.height * 0.5;
+        const anchor = padToPixel(pad, spell.anchor);
+        const cx = anchor.x;
+        const cy = anchor.y;
         this.effects.spawnShockwave(cx, cy, 212, 1.05);
         this.flashCombo("NOW!", "perfect");
       }
@@ -1439,10 +2223,7 @@ export class RuneGatesHUD {
 
     spell.snapWindowRemainingSec = Math.max(0, spell.snapWindowRemainingSec - dt);
     spell.timeRemainingSec = spell.snapWindowRemainingSec;
-    const centerPx = {
-      x: pad.x + pad.width * 0.5,
-      y: pad.y + pad.height * 0.5
-    };
+    const centerPx = padToPixel(pad, spell.anchor);
     const distToCenter = Math.hypot(puckPx.x - centerPx.x, puckPx.y - centerPx.y);
     if (distToCenter <= spell.snapTolerancePx) {
       spell.centerHoldSec = Math.min(spell.centerHoldGoalSec, spell.centerHoldSec + dt);
@@ -1477,12 +2258,46 @@ export class RuneGatesHUD {
     }
 
     this.faceoffSpell = null;
+
+    if (spell.trigger === "BREACH_SAVE") {
+      const pad = this.getPadBounds();
+      const anchor = padToPixel(pad, spell.anchor);
+      const cx = anchor.x;
+      const cy = anchor.y;
+      const ritualPower = clamp(1 + this.combo * 0.08 + (success ? 0.25 : 0), 0.9, 2.1);
+
+      if (success) {
+        const integrityRestore = 0.24 + Math.min(0.16, this.bestCombo * 0.012);
+        const pressureDrop = 0.28 + Math.min(0.14, this.bestCombo * 0.01);
+        this.sealIntegrity = clamp(Math.max(this.sealIntegrity, 0.08) + integrityRestore, 0, 1);
+        this.riftPressure = clamp(this.riftPressure - pressureDrop, 0, 1);
+        this.applyThreatSafetyRails();
+        this.breachRitualSaves += 1;
+        this.score += 180 + Math.round(this.bestCombo * 12);
+        this.flashCombo("SEAL STABILIZED", "perfect");
+        this.showStatus(`Ritual success • seal restored (${this.breachRitualSaves})`, "goal", 1.2);
+        this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.08, "SEAL HELD", 200);
+        this.effects.spawnShockwave(cx, cy, 200, 1.45 * ritualPower);
+        this.effects.spawnHitBurst(cx, cy, 196, 1.55 * ritualPower);
+        this.effects.triggerShake(0.52 * ritualPower);
+      } else {
+        this.flashCombo("RITUAL FAILED", "miss");
+        this.showStatus("Rift consumes the seal", "danger", 1.05);
+        this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.08, "RIFT WINS", 8);
+        this.effects.spawnShockwave(cx, cy, 12, 1.6 * ritualPower);
+        this.effects.triggerShake(0.62 * ritualPower);
+        this.triggerBreach();
+      }
+      return;
+    }
+
     const winner: Possession = success ? "PLAYER" : spell.favoredPossession;
     this.changePossession(winner, "FACEOFF", { fromFaceoffResolution: true });
 
     const pad = this.getPadBounds();
-    const cx = pad.x + pad.width * 0.5;
-    const cy = pad.y + pad.height * 0.5;
+    const anchor = padToPixel(pad, spell.anchor);
+    const cx = anchor.x;
+    const cy = anchor.y;
     const label = winner === "PLAYER" ? "OFFENSE" : "DEFENSE";
     const hue = winner === "PLAYER" ? 200 : 16;
     const tone = winner === "PLAYER" ? "offense" : "defense";
@@ -1616,6 +2431,40 @@ export class RuneGatesHUD {
     return clips;
   }
 
+  private getPooledSfxAudio(url: string, poolSize: number): HTMLAudioElement {
+    const size = Math.max(1, Math.floor(poolSize));
+    let pool = this.sfxAudioPools.get(url);
+    if (!pool) {
+      pool = [];
+      this.sfxAudioPools.set(url, pool);
+      this.sfxAudioPoolCursor.set(url, 0);
+    }
+
+    while (pool.length < size) {
+      const audio = new Audio(url);
+      audio.preload = "auto";
+      pool.push(audio);
+    }
+
+    const cursor = this.sfxAudioPoolCursor.get(url) ?? 0;
+    const nextIndex = cursor % pool.length;
+    this.sfxAudioPoolCursor.set(url, (nextIndex + 1) % pool.length);
+    return pool[nextIndex]!;
+  }
+
+  private playPooledSfx(url: string, volume: number, poolSize: number): void {
+    const audio = this.getPooledSfxAudio(url, poolSize);
+    audio.volume = volume;
+    try {
+      audio.currentTime = 0;
+    } catch {
+      // Ignore seek failures while the element is still priming.
+    }
+    void audio.play().catch(() => {
+      // Ignore autoplay/user-gesture failures.
+    });
+  }
+
   private playGameSfx(key: GameSfxKey): void {
     // Avoid layering gameplay callouts on top of the pre-game intro VO.
     if (this.introAudio) {
@@ -1641,14 +2490,106 @@ export class RuneGatesHUD {
     this.gameSfxLastPlayedAt.set(key, now);
     this.gameSfxLastClipIndex.set(key, index);
 
-    const audio = new Audio(clips[index] ?? clips[0]);
-    audio.preload = "auto";
-    audio.volume =
-      key === "goal" || key === "victory" ? 0.88 : key === "loss" || key === "goal_against" ? 0.8 : 0.72;
+    const volume = key === "goal" || key === "victory" ? 0.88 : key === "loss" || key === "goal_against" ? 0.8 : 0.72;
     this.duckBackgroundMusic(key === "goal" || key === "goal_against" || key === "victory" || key === "loss" ? 950 : 520);
-    void audio.play().catch(() => {
-      // Ignore autoplay/user-gesture failures.
-    });
+    this.playPooledSfx(clips[index] ?? clips[0]!, volume, ANNOUNCER_SFX_POOL_SIZE);
+  }
+
+  private playPuckHitSfx(intensity: number): void {
+    if (this.introAudio) {
+      return;
+    }
+    const clips = this.puckHitSfxUrls;
+    if (!clips || clips.length === 0) {
+      return;
+    }
+
+    const now = performance.now();
+    if (now - this.puckHitSfxLastPlayedAt < this.puckHitSfxCooldownMs) {
+      return;
+    }
+
+    let index = Math.floor(Math.random() * clips.length);
+    if (clips.length > 1 && index === this.puckHitSfxLastClipIndex) {
+      index = (index + 1 + Math.floor(Math.random() * (clips.length - 1))) % clips.length;
+    }
+    this.puckHitSfxLastClipIndex = index;
+    this.puckHitSfxLastPlayedAt = now;
+
+    const volume = clamp(0.28 + intensity * 0.22, 0.24, 0.56);
+    this.duckBackgroundMusic(160);
+    this.playPooledSfx(clips[index] ?? clips[0]!, volume, PUCK_HIT_SFX_POOL_SIZE);
+  }
+
+  private playCrackPropagationCue(intensity: number): void {
+    if (this.introAudio || this.trainingMode || this.spellDemoMode || this.preStartCountdownActive) {
+      return;
+    }
+    const now = performance.now();
+    if (now - this.crackPropagationCueLastAtMs < this.crackPropagationCueCooldownMs) {
+      return;
+    }
+    this.crackPropagationCueLastAtMs = now;
+    this.duckBackgroundMusic(120);
+
+    const windowWithWebkitAudio = window as Window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextCtor = windowWithWebkitAudio.AudioContext ?? windowWithWebkitAudio.webkitAudioContext;
+    if (!AudioContextCtor) {
+      this.playPuckHitSfx(clamp(0.64 + intensity * 0.16, 0.6, 1));
+      return;
+    }
+
+    try {
+      if (!this.crackCueAudioContext || this.crackCueAudioContext.state === "closed") {
+        this.crackCueAudioContext = new AudioContextCtor();
+      }
+      const audioCtx = this.crackCueAudioContext;
+      if (audioCtx.state === "suspended") {
+        void audioCtx.resume();
+      }
+
+      const at = audioCtx.currentTime;
+      const baseHz = 210 + intensity * 130;
+
+      const primary = audioCtx.createOscillator();
+      primary.type = "triangle";
+      primary.frequency.setValueAtTime(baseHz, at);
+      primary.frequency.exponentialRampToValueAtTime(Math.max(86, baseHz * 0.33), at + 0.18);
+
+      const brittle = audioCtx.createOscillator();
+      brittle.type = "square";
+      brittle.frequency.setValueAtTime(baseHz * 1.82, at);
+      brittle.frequency.exponentialRampToValueAtTime(Math.max(146, baseHz * 0.72), at + 0.12);
+
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(760 + intensity * 280, at);
+      filter.Q.value = 0.8 + intensity * 1.1;
+
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.06 + intensity * 0.045, at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+
+      primary.connect(filter);
+      brittle.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      primary.start(at);
+      brittle.start(at + 0.002);
+      primary.stop(at + 0.24);
+      brittle.stop(at + 0.16);
+
+      primary.onended = () => {
+        primary.disconnect();
+        brittle.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
+    } catch {
+      this.playPuckHitSfx(clamp(0.6 + intensity * 0.18, 0.6, 1));
+    }
   }
 
   private updateBackgroundMusic(dt: number): void {
@@ -1854,6 +2795,8 @@ export class RuneGatesHUD {
       grade === "PERFECT" ? 42 : grade === "GREAT" ? 46 : styleHue(style)
     );
     this.effects.triggerShake((isPerfect ? 0.9 : grade === "GREAT" ? 0.7 : 0.5) * Math.min(1.55, comboImpact));
+    const hitAudioIntensity = clamp((grade === "PERFECT" ? 1 : grade === "GREAT" ? 0.82 : 0.7) + this.combo * 0.03, 0.6, 1.25);
+    this.playPuckHitSfx(hitAudioIntensity);
     this.pulseComboStat();
 
     let turnoverToDefense = false;
@@ -2521,6 +3464,7 @@ export class RuneGatesHUD {
     this.effects.spawnShockwave(cx, cy, 46, 2.6);
     this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.07, "GOAL", 46);
     this.effects.triggerShake(0.95);
+    this.triggerGuestEmote("ANGRY");
     this.playGameSfx("goal");
     this.flashCombo(`${this.playerGoals}-${this.enemyGoals} • GOAL`, "great");
     this.showStatus(`GOAL • ${this.playerGoals}-${this.enemyGoals} ${this.monsterTeam.shortName}`, "goal", 1.35);
@@ -2547,6 +3491,7 @@ export class RuneGatesHUD {
     this.effects.spawnShockwave(cx, cy, 6, 2.2);
     this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.05, "GOAL AGAINST", 8);
     this.effects.triggerShake(0.85);
+    this.triggerGuestEmote("HAPPY");
     this.playGameSfx("goal_against");
     this.flashCombo(`${this.playerGoals}-${this.enemyGoals} • ${reason}`, "miss");
     this.showStatus(`GOAL AGAINST • ${this.playerGoals}-${this.enemyGoals}`, "danger", 1.35);
@@ -2571,10 +3516,17 @@ export class RuneGatesHUD {
     return "tie";
   }
 
-  private updateHud(): void {
+  private updateHud(force = false): void {
+    if (!force && this.hudRefreshCooldown > 0) {
+      return;
+    }
+    this.hudRefreshCooldown = HUD_REFRESH_INTERVAL_SEC;
+
     const inPreStartCountdown = this.preStartCountdownActive;
     const activeFaceoffSpell = this.faceoffSpell;
     const inFaceoffSpell = activeFaceoffSpell !== null;
+    const activeInterlude = this.interludeChallenge;
+    const inInterlude = activeInterlude !== null;
     const difficulty = this.getDifficultySnapshot();
     const elapsedTotal = this.sessionDuration - this.timeRemaining;
     const periodIndex = this.getCurrentPeriodIndex();
@@ -2590,30 +3542,62 @@ export class RuneGatesHUD {
     const faceoffTimeRemaining =
       activeFaceoffSpell === null
         ? 0
-        : activeFaceoffSpell.stage === "TRACE"
-          ? activeFaceoffSpell.timeRemainingSec
-          : activeFaceoffSpell.snapCueDelaySec + activeFaceoffSpell.snapWindowRemainingSec;
+        : activeFaceoffSpell.stage === "APPROACH"
+          ? activeFaceoffSpell.traceDurationSec
+          : activeFaceoffSpell.timeRemainingSec;
     const faceoffTimeProgress =
       activeFaceoffSpell === null
         ? 0
-        : clamp(faceoffTimeRemaining / Math.max(0.0001, activeFaceoffSpell.totalDurationSec), 0, 1);
-    const timeProgress = inPreStartCountdown ? countdownProgress : inFaceoffSpell ? faceoffTimeProgress : periodTimeProgress;
+        : activeFaceoffSpell.stage === "APPROACH"
+          ? 1
+          : clamp(faceoffTimeRemaining / Math.max(0.0001, activeFaceoffSpell.totalDurationSec), 0, 1);
+    const interludeTimeRemaining =
+      activeInterlude === null
+        ? 0
+        : activeInterlude.introRemainingSec > 0
+          ? activeInterlude.introRemainingSec
+          : activeInterlude.timeRemainingSec;
+    const interludeTimeProgress =
+      activeInterlude === null
+        ? 0
+        : activeInterlude.introRemainingSec > 0
+          ? 1
+          : clamp(activeInterlude.timeRemainingSec / Math.max(0.0001, activeInterlude.durationSec), 0, 1);
+    const timeProgress = inPreStartCountdown
+      ? countdownProgress
+      : inFaceoffSpell
+        ? faceoffTimeProgress
+        : inInterlude
+          ? interludeTimeProgress
+          : periodTimeProgress;
     const timeUrgency = 1 - timeProgress;
 
     this.timerEl.textContent = inPreStartCountdown
       ? countdownLabel
       : inFaceoffSpell
-        ? activeFaceoffSpell.stage === "SNAP" && activeFaceoffSpell.snapCueDelaySec <= 0.001
+        ? activeFaceoffSpell.stage === "APPROACH"
+          ? "READY"
+          : activeFaceoffSpell.stage === "SNAP" && activeFaceoffSpell.snapCueDelaySec <= 0.001
           ? "NOW"
           : formatClockMmSs(faceoffTimeRemaining)
-        : formatClockMmSs(periodTimeRemaining);
+        : inInterlude
+          ? activeInterlude.introRemainingSec > 0
+            ? String(Math.max(1, Math.ceil(activeInterlude.introRemainingSec)))
+            : formatClockMmSs(interludeTimeRemaining)
+          : formatClockMmSs(periodTimeRemaining);
     setArcaneScoreboardScore(this.scoreboardRefs, this.playerGoals, this.enemyGoals);
     this.comboEl.textContent = `x${this.combo}`;
     const possessionThreshold =
       this.possession === "PLAYER" ? this.getPlayerShotThreshold() : this.getPlayerTakeawayThreshold();
-    const scoreBandProgress = clamp(this.playerAttackCharge / Math.max(0.0001, possessionThreshold), 0, 1);
-    const comboProgress = clamp(this.combo / 8, 0, 1);
-    const comboHeat = clamp(this.combo / 12, 0, 1);
+    const interludeCheckpointProgress =
+      activeInterlude === null
+        ? 0
+        : clamp(activeInterlude.currentCheckpointIndex / Math.max(1, activeInterlude.checkpoints.length), 0, 1);
+    const scoreBandProgress = inInterlude
+      ? interludeCheckpointProgress
+      : clamp(this.playerAttackCharge / Math.max(0.0001, possessionThreshold), 0, 1);
+    const comboProgress = inInterlude ? clamp(1 - interludeTimeProgress, 0, 1) : clamp(this.combo / 8, 0, 1);
+    const comboHeat = inInterlude ? clamp(interludeCheckpointProgress * 1.1, 0, 1) : clamp(this.combo / 12, 0, 1);
 
     this.timeDialEl.style.setProperty("--progress", timeProgress.toFixed(4));
     this.timeDialEl.style.setProperty("--urgency", timeUrgency.toFixed(4));
@@ -2623,8 +3607,21 @@ export class RuneGatesHUD {
 
     this.timeDialEl.dataset.state =
       timeProgress <= 0.2 ? "critical" : timeProgress <= 0.45 ? "warning" : "stable";
-    this.comboStatEl.dataset.state =
-      this.combo >= 8 ? "overdrive" : this.combo >= 4 ? "hot" : this.combo >= 1 ? "warm" : "idle";
+    this.comboStatEl.dataset.state = inInterlude
+      ? interludeCheckpointProgress >= 0.86
+        ? "overdrive"
+        : interludeCheckpointProgress >= 0.45
+          ? "hot"
+          : interludeCheckpointProgress >= 0.1
+            ? "warm"
+            : "idle"
+      : this.combo >= 8
+        ? "overdrive"
+        : this.combo >= 4
+          ? "hot"
+          : this.combo >= 1
+            ? "warm"
+            : "idle";
 
     this.periodRailEl.textContent = inPreStartCountdown
       ? this.trainingMode
@@ -2633,22 +3630,48 @@ export class RuneGatesHUD {
       : this.spellDemoMode
         ? "Spell Demo"
       : inFaceoffSpell
-        ? "Faceoff Rune"
+        ? activeFaceoffSpell.trigger === "BREACH_SAVE"
+          ? "Seal Ritual"
+          : "Faceoff Rune"
+      : inInterlude
+        ? `${activeInterlude!.label} Challenge`
       : this.trainingMode
         ? "Training"
         : `Period ${this.currentPeriod}`;
-    this.scoreLabelEl.textContent = inPreStartCountdown || inFaceoffSpell ? "Faceoff" : this.trainingMode ? "Practice" : this.ended ? "Final" : this.getPossessionLabel();
+    this.scoreLabelEl.textContent = inPreStartCountdown || inFaceoffSpell
+      ? "Faceoff"
+      : inInterlude
+        ? "Interlude"
+      : this.trainingMode
+        ? "Practice"
+      : this.ended
+        ? "Final"
+        : this.getPossessionLabel();
 
     this.timeDialSubEl.textContent = inPreStartCountdown
       ? this.introAudio
         ? "Intro call • Faceoff ready"
         : "Faceoff ready"
       : inFaceoffSpell
-        ? activeFaceoffSpell.stage === "TRACE"
-          ? `Trace rune nodes • ${activeFaceoffSpell.currentNodeIndex}/${activeFaceoffSpell.nodes.length}`
-          : activeFaceoffSpell.snapCueDelaySec > 0.001
-            ? "Hold the channel • cue incoming"
-            : "Snap to center now"
+        ? activeFaceoffSpell.trigger === "BREACH_SAVE"
+          ? activeFaceoffSpell.stage === "APPROACH"
+            ? "Touch the ritual start glyph to begin"
+            : activeFaceoffSpell.stage === "TRACE"
+            ? `Seal ritual • trace ${activeFaceoffSpell.currentNodeIndex}/${activeFaceoffSpell.nodes.length}`
+            : activeFaceoffSpell.snapCueDelaySec > 0.001
+              ? "Seal ritual • cue incoming"
+              : "Seal ritual • snap to center"
+          : activeFaceoffSpell.stage === "APPROACH"
+            ? "Touch the start glyph to begin tracing"
+          : activeFaceoffSpell.stage === "TRACE"
+            ? `Trace rune nodes • ${activeFaceoffSpell.currentNodeIndex}/${activeFaceoffSpell.nodes.length}`
+            : activeFaceoffSpell.snapCueDelaySec > 0.001
+              ? "Hold the channel • cue incoming"
+              : "Snap to center now"
+      : inInterlude
+        ? activeInterlude!.introRemainingSec > 0
+          ? `${activeInterlude!.label} starts • ${Math.max(1, Math.ceil(activeInterlude!.introRemainingSec))}s`
+          : `${activeInterlude!.prompt} • ${activeInterlude!.timeRemainingSec.toFixed(1)}s`
       : this.spellDemoMode
         ? "Demo pacing • no score penalties"
       : this.trainingMode
@@ -2663,7 +3686,13 @@ export class RuneGatesHUD {
     this.scoreDialSubEl.textContent = this.ended
       ? `${this.monsterTeam.shortName} • Runes ${this.score.toLocaleString()}`
       : inFaceoffSpell
-        ? `Winner takes puck • Runes ${this.score.toLocaleString()}`
+        ? activeFaceoffSpell.trigger === "BREACH_SAVE"
+          ? `Prevent breach • Runes ${this.score.toLocaleString()}`
+          : activeFaceoffSpell.stage === "APPROACH"
+            ? `Touch start glyph • Runes ${this.score.toLocaleString()}`
+            : `Winner takes puck • Runes ${this.score.toLocaleString()}`
+      : inInterlude
+        ? `Nodes ${activeInterlude!.currentCheckpointIndex}/${activeInterlude!.checkpoints.length} • Runes ${this.score.toLocaleString()}`
       : this.spellDemoMode
         ? `Faceoff demo rounds • ${this.faceoffDemoRounds}`
       : this.trainingMode
@@ -2674,11 +3703,25 @@ export class RuneGatesHUD {
     this.comboDialSubEl.textContent = inPreStartCountdown
       ? "Track the gate • wait for GO!"
       : inFaceoffSpell
-        ? activeFaceoffSpell.stage === "TRACE"
-          ? `Trace ${Math.min(activeFaceoffSpell.currentNodeIndex, activeFaceoffSpell.nodes.length)}/${activeFaceoffSpell.nodes.length}`
-          : activeFaceoffSpell.snapCueDelaySec > 0.001
-            ? "Steady..."
-            : `Center hold ${Math.round(clamp(activeFaceoffSpell.centerHoldSec / Math.max(0.0001, activeFaceoffSpell.centerHoldGoalSec), 0, 1) * 100)}%`
+        ? activeFaceoffSpell.trigger === "BREACH_SAVE"
+          ? activeFaceoffSpell.stage === "APPROACH"
+            ? "Touch ritual start glyph"
+            : activeFaceoffSpell.stage === "TRACE"
+            ? `Seal trace ${Math.min(activeFaceoffSpell.currentNodeIndex, activeFaceoffSpell.nodes.length)}/${activeFaceoffSpell.nodes.length}`
+            : activeFaceoffSpell.snapCueDelaySec > 0.001
+              ? "Channel the seal..."
+              : `Seal hold ${Math.round(clamp(activeFaceoffSpell.centerHoldSec / Math.max(0.0001, activeFaceoffSpell.centerHoldGoalSec), 0, 1) * 100)}%`
+          : activeFaceoffSpell.stage === "APPROACH"
+            ? "Touch start glyph"
+          : activeFaceoffSpell.stage === "TRACE"
+            ? `Trace ${Math.min(activeFaceoffSpell.currentNodeIndex, activeFaceoffSpell.nodes.length)}/${activeFaceoffSpell.nodes.length}`
+            : activeFaceoffSpell.snapCueDelaySec > 0.001
+              ? "Steady..."
+              : `Center hold ${Math.round(clamp(activeFaceoffSpell.centerHoldSec / Math.max(0.0001, activeFaceoffSpell.centerHoldGoalSec), 0, 1) * 100)}%`
+      : inInterlude
+        ? activeInterlude!.introRemainingSec > 0
+          ? "Move to the first rune node"
+          : `${Math.max(0, activeInterlude!.checkpoints.length - activeInterlude!.currentCheckpointIndex)} nodes left • stay smooth`
       : this.spellDemoMode
         ? "Practice rune draw rhythm"
       : this.trainingMode
@@ -2709,11 +3752,12 @@ export class RuneGatesHUD {
     this.pressureFillEl.style.height = `${(threatDisplay * 100).toFixed(1)}%`;
     this.panelEl.dataset.threat = phase;
     this.panelEl.dataset.possession = this.possession;
-    this.comboStatEl.style.setProperty("--combo-pips-fill", String(Math.min(5, this.combo)));
+    const comboPipsFill = inInterlude ? Math.round(interludeCheckpointProgress * 5) : Math.min(5, this.combo);
+    this.comboStatEl.style.setProperty("--combo-pips-fill", String(comboPipsFill));
     for (let i = 0; i < this.comboPipsEls.length; i += 1) {
       const pip = this.comboPipsEls[i];
-      pip.classList.toggle("is-active", i < Math.min(5, this.combo));
-      pip.classList.toggle("is-overflow", this.combo >= 6 && i === this.comboPipsEls.length - 1);
+      pip.classList.toggle("is-active", i < comboPipsFill);
+      pip.classList.toggle("is-overflow", !inInterlude && this.combo >= 6 && i === this.comboPipsEls.length - 1);
     }
 
     let phaseText = `Threat: Stable • ${this.getPossessionLabel()} • ${difficulty.paceShort}`;
@@ -2728,12 +3772,21 @@ export class RuneGatesHUD {
       phaseText = "Training • Forgiving gates • No taunts";
     } else if (this.spellDemoMode) {
       phaseText = inFaceoffSpell
-        ? activeFaceoffSpell.stage === "TRACE"
+        ? activeFaceoffSpell.stage === "APPROACH"
+          ? "Spell Demo • Touch start glyph"
+          : activeFaceoffSpell.stage === "TRACE"
           ? "Spell Demo • Trace rune path"
           : activeFaceoffSpell.snapCueDelaySec > 0.001
             ? "Spell Demo • Channeling"
             : "Spell Demo • Snap to center"
         : "Spell Demo • Next rune draw incoming";
+    } else if (inInterlude) {
+      const pendingCount = Math.max(0, this.interludeSchedule.length - this.nextInterludeScheduleIndex);
+      phaseText = activeInterlude!.introRemainingSec > 0
+        ? `Interlude • ${activeInterlude!.label} starts`
+        : `Interlude • ${activeInterlude!.label} • ${activeInterlude!.currentCheckpointIndex}/${activeInterlude!.checkpoints.length}${
+            pendingCount > 0 ? ` • ${pendingCount} later` : ""
+          }`;
     } else if (this.isRookieWardActive() && !inPreStartCountdown) {
       const runsLeft = this.threatProgression.runsUntilBreachUnlock;
       phaseText =
@@ -2741,8 +3794,17 @@ export class RuneGatesHUD {
           ? `Rookie Ward • Learn offense/defense • Breach unlocks in ${runsLeft}`
           : "Rookie Ward • Learn offense/defense";
     } else if (inFaceoffSpell) {
-      phaseText =
-        activeFaceoffSpell.stage === "TRACE"
+      phaseText = activeFaceoffSpell.trigger === "BREACH_SAVE"
+        ? activeFaceoffSpell.stage === "APPROACH"
+          ? "Seal Ritual • Touch start glyph"
+          : activeFaceoffSpell.stage === "TRACE"
+          ? "Seal Ritual • Trace to prevent breach"
+          : activeFaceoffSpell.snapCueDelaySec > 0.001
+            ? "Seal Ritual • Channeling"
+            : "Seal Ritual • Snap to center"
+        : activeFaceoffSpell.stage === "APPROACH"
+          ? "Faceoff Spell • Touch start glyph"
+          : activeFaceoffSpell.stage === "TRACE"
           ? "Faceoff Spell • Trace rune path"
           : activeFaceoffSpell.snapCueDelaySec > 0.001
             ? "Faceoff Spell • Channeling"
@@ -2752,6 +3814,149 @@ export class RuneGatesHUD {
     }
     this.phaseEl.textContent = phaseText;
     this.updateSidePortraitHud();
+  }
+
+  private renderInterludeChallenge(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    challenge: InterludeChallengeState
+  ): void {
+    const minDim = Math.min(padRect.width, padRect.height);
+    const radius = minDim * 0.035;
+    const intro = challenge.introRemainingSec > 0;
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.8);
+    const total = Math.max(1, challenge.checkpoints.length);
+    const completed = Math.min(total, challenge.currentCheckpointIndex);
+    const activeIndex = Math.min(total - 1, challenge.currentCheckpointIndex);
+    const hue = challenge.hue;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(padRect.x, padRect.y, padRect.width, padRect.height, radius);
+    ctx.clip();
+
+    const veil = ctx.createLinearGradient(padRect.x, padRect.y, padRect.x + padRect.width, padRect.y + padRect.height);
+    veil.addColorStop(0, `hsla(${hue} 55% 16% / 0.2)`);
+    veil.addColorStop(0.5, `hsla(${hue} 45% 11% / 0.24)`);
+    veil.addColorStop(1, `hsla(${hue} 48% 14% / 0.2)`);
+    ctx.fillStyle = veil;
+    ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
+
+    const pointsPx = challenge.checkpoints.map((point) => padToPixel(padRect, point));
+    if (pointsPx.length > 1) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = `hsla(${hue} 30% 80% / 0.2)`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      for (let i = 0; i < pointsPx.length; i += 1) {
+        const point = pointsPx[i];
+        if (!point) {
+          continue;
+        }
+        if (i === 0) {
+          ctx.moveTo(point.x, point.y);
+        } else {
+          ctx.lineTo(point.x, point.y);
+        }
+      }
+      ctx.stroke();
+
+      if (completed > 0) {
+        ctx.strokeStyle = `hsla(${hue} 92% 72% / ${intro ? 0.3 : 0.9})`;
+        ctx.shadowColor = `hsla(${hue} 92% 70% / ${intro ? 0.18 : 0.42})`;
+        ctx.shadowBlur = 12;
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        const first = pointsPx[0];
+        if (first) {
+          ctx.moveTo(first.x, first.y);
+          for (let i = 1; i <= completed && i < pointsPx.length; i += 1) {
+            const point = pointsPx[i];
+            if (point) {
+              ctx.lineTo(point.x, point.y);
+            }
+          }
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    const checkpointRadius = minDim * challenge.checkpointRadiusScale;
+    for (let i = 0; i < pointsPx.length; i += 1) {
+      const point = pointsPx[i];
+      if (!point) {
+        continue;
+      }
+      const visited = i < completed;
+      const active = i === activeIndex;
+      const alpha = intro ? 0.45 : visited ? 0.94 : active ? 0.82 : 0.44;
+      const ringScale = active ? 1 + pulse * 0.18 : 1;
+
+      ctx.strokeStyle = visited
+        ? `hsla(${hue} 100% 82% / ${alpha.toFixed(3)})`
+        : `hsla(${hue} 66% 74% / ${alpha.toFixed(3)})`;
+      ctx.lineWidth = active ? 3.4 : 2;
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, checkpointRadius * ringScale, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = visited
+        ? `hsla(${hue} 100% 76% / ${(0.22 + pulse * 0.2).toFixed(3)})`
+        : `hsla(${hue} 86% 72% / ${(active ? 0.24 + pulse * 0.2 : 0.08).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, checkpointRadius * (visited ? 0.44 : active ? 0.38 : 0.28), 0, Math.PI * 2);
+      ctx.fill();
+
+      if (active && !intro) {
+        ctx.strokeStyle = `hsla(${hue} 100% 88% / ${(0.45 + pulse * 0.4).toFixed(3)})`;
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([7, 6]);
+        ctx.lineDashOffset = -timeSec * 24;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, checkpointRadius * (1.26 + pulse * 0.1), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    const heading = intro
+      ? `${challenge.label.toUpperCase()} IN ${Math.max(1, Math.ceil(challenge.introRemainingSec))}`
+      : `${challenge.label.toUpperCase()} • ${Math.min(challenge.currentCheckpointIndex, total)}/${total}`;
+    const subtext = intro ? challenge.prompt : `Time ${challenge.timeRemainingSec.toFixed(1)}s • stay on rhythm`;
+    const timeProgress = clamp(challenge.timeRemainingSec / Math.max(0.001, challenge.durationSec), 0, 1);
+    const meterW = padRect.width * 0.36;
+    const meterH = 8;
+    const meterX = padRect.x + (padRect.width - meterW) * 0.5;
+    const meterY = padRect.y + minDim * 0.11;
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(238, 246, 252, 0.94)";
+    ctx.font = `${Math.max(14, Math.round(minDim * 0.036))}px "Cinzel", "Times New Roman", serif`;
+    ctx.fillText(heading, padRect.x + padRect.width * 0.5, padRect.y + minDim * 0.06);
+    ctx.fillStyle = "rgba(215, 230, 244, 0.84)";
+    ctx.font = `${Math.max(11, Math.round(minDim * 0.022))}px "Merriweather", Georgia, serif`;
+    ctx.fillText(subtext, padRect.x + padRect.width * 0.5, padRect.y + minDim * 0.09);
+
+    ctx.fillStyle = "rgba(10, 16, 24, 0.4)";
+    ctx.beginPath();
+    ctx.roundRect(meterX, meterY, meterW, meterH, meterH * 0.5);
+    ctx.fill();
+    const fillW = meterW * (intro ? 1 : timeProgress);
+    if (fillW > 0.5) {
+      const fill = ctx.createLinearGradient(meterX, meterY, meterX + fillW, meterY);
+      fill.addColorStop(0, `hsla(${hue} 85% 58% / 0.95)`);
+      fill.addColorStop(1, `hsla(${hue} 100% 72% / 0.95)`);
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.roundRect(meterX, meterY, fillW, meterH, meterH * 0.5);
+      ctx.fill();
+    }
+
+    ctx.restore();
   }
 
   private pulseComboStat(): void {
@@ -2908,6 +4113,42 @@ export class RuneGatesHUD {
     }
   }
 
+  private updateBreachVisualState(dt: number): void {
+    const pressure = clamp(this.riftPressure, 0, 1);
+    const fracture = clamp(1 - this.sealIntegrity, 0, 1);
+    const surge = clamp(this.breachSurgeTimer / 2.6, 0, 1);
+    const target = clamp(Math.max(fracture, pressure * 0.9, surge * 1.04), 0, 1);
+    if (target > this.breachVisualPropagation) {
+      const rise = Math.min(1, dt * (1.35 + target * 2.2));
+      this.breachVisualPropagation = clamp(this.breachVisualPropagation + (target - this.breachVisualPropagation) * rise, 0, 1);
+    } else {
+      const fall = dt * (0.12 + (1 - target) * 0.18);
+      this.breachVisualPropagation = clamp(this.breachVisualPropagation - Math.min(this.breachVisualPropagation - target, fall), 0, 1);
+    }
+
+    const step = Math.floor(this.breachVisualPropagation * 10);
+    if (step > this.breachVisualStep) {
+      const stepGain = step - this.breachVisualStep;
+      const cueIntensity = clamp(0.45 + this.breachVisualPropagation * 0.45 + stepGain * 0.08, 0.45, 1);
+      this.playCrackPropagationCue(cueIntensity);
+    }
+    this.breachVisualStep = step;
+
+    this.breachRumbleCooldown = Math.max(0, this.breachRumbleCooldown - dt);
+    if (
+      this.breachVisualPropagation >= 0.78 &&
+      this.breachRumbleCooldown <= 0 &&
+      !this.trainingMode &&
+      !this.spellDemoMode &&
+      !this.preStartCountdownActive &&
+      !this.ended
+    ) {
+      const rumbleStrength = clamp(0.09 + (this.breachVisualPropagation - 0.75) * 0.3 + surge * 0.18, 0.09, 0.24);
+      this.effects.triggerShake(rumbleStrength);
+      this.breachRumbleCooldown = 0.22;
+    }
+  }
+
   private updateTension(dt: number): void {
     const difficulty = this.getDifficultySnapshot();
     this.breachSurgeTimer = Math.max(0, this.breachSurgeTimer - dt);
@@ -2945,7 +4186,9 @@ export class RuneGatesHUD {
     this.lowestIntegrity = Math.min(this.lowestIntegrity, this.sealIntegrity);
 
     if (this.isBreachMechanicEnabled() && this.sealIntegrity <= 0.0001) {
-      this.triggerBreach();
+      if (!this.tryStartBreachRitual()) {
+        this.triggerBreach();
+      }
     }
   }
 
@@ -2969,8 +4212,27 @@ export class RuneGatesHUD {
     this.applyThreatSafetyRails();
     this.lowestIntegrity = Math.min(this.lowestIntegrity, this.sealIntegrity);
     if (this.isBreachMechanicEnabled() && this.sealIntegrity <= 0.0001) {
-      this.triggerBreach();
+      if (!this.tryStartBreachRitual()) {
+        this.triggerBreach();
+      }
     }
+  }
+
+  private tryStartBreachRitual(): boolean {
+    if (
+      !this.isBreachMechanicEnabled() ||
+      this.ended ||
+      this.preStartCountdownActive ||
+      this.faceoffSpell !== null ||
+      this.trainingMode ||
+      this.spellDemoMode ||
+      this.breachRitualCooldown > 0
+    ) {
+      return false;
+    }
+    this.breachRitualCooldown = 2.8;
+    this.startFaceoffSpell("BREACH_SAVE", this.possession);
+    return true;
   }
 
   private triggerBreach(): void {
@@ -2991,6 +4253,8 @@ export class RuneGatesHUD {
     this.breachOutroBurstStage = 0;
     const comboCharge = comboAtFail * 0.75 + this.bestCombo * 0.35;
     this.breachOutroPower = clamp(1 + comboCharge * 0.045, 1, 2.1);
+    this.breachVisualPropagation = Math.max(this.breachVisualPropagation, 0.98);
+    this.breachVisualStep = Math.max(this.breachVisualStep, 9);
 
     const pad = this.getPadBounds();
     const cx = pad.x + pad.width * 0.5;
@@ -3014,8 +4278,10 @@ export class RuneGatesHUD {
     spell: FaceoffSpellState
   ): void {
     const minDim = Math.min(padRect.width, padRect.height);
-    const cx = padRect.x + padRect.width * 0.5;
-    const cy = padRect.y + padRect.height * 0.5;
+    const anchorPx = padToPixel(padRect, spell.anchor);
+    const cx = anchorPx.x;
+    const cy = anchorPx.y;
+    const breachRitual = spell.trigger === "BREACH_SAVE";
     const traceProgress = clamp(spell.currentNodeIndex / Math.max(1, spell.nodes.length), 0, 1);
     const snapReady = spell.stage === "SNAP" && spell.snapCueDelaySec <= 0.001;
     const snapHoldProgress =
@@ -3027,9 +4293,9 @@ export class RuneGatesHUD {
     ctx.clip();
 
     const veil = ctx.createRadialGradient(cx, cy, minDim * 0.08, cx, cy, minDim * 0.86);
-    veil.addColorStop(0, "rgba(52, 88, 136, 0.16)");
-    veil.addColorStop(0.6, "rgba(28, 46, 72, 0.14)");
-    veil.addColorStop(1, "rgba(8, 14, 24, 0.3)");
+    veil.addColorStop(0, breachRitual ? "rgba(124, 62, 48, 0.22)" : "rgba(52, 88, 136, 0.16)");
+    veil.addColorStop(0.6, breachRitual ? "rgba(84, 35, 30, 0.2)" : "rgba(28, 46, 72, 0.14)");
+    veil.addColorStop(1, breachRitual ? "rgba(23, 10, 10, 0.36)" : "rgba(8, 14, 24, 0.3)");
     ctx.fillStyle = veil;
     ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
 
@@ -3099,13 +4365,16 @@ export class RuneGatesHUD {
     }
 
     const activeNodeIndex = Math.min(spell.currentNodeIndex, spell.nodes.length - 1);
+    const startNodePx = pointsPx[0];
     for (let i = 0; i < pointsPx.length; i += 1) {
       const node = pointsPx[i];
       const isVisited = i < spell.currentNodeIndex;
-      const isActive = spell.stage === "TRACE" && i === activeNodeIndex;
+      const isStartNode = spell.stage === "APPROACH" && i === 0;
+      const isActive = isStartNode || (spell.stage === "TRACE" && i === activeNodeIndex);
       const radius = minDim * (isActive ? 0.024 : isVisited ? 0.017 : 0.014);
       const pulse = isActive ? 0.65 + 0.35 * Math.sin(timeSec * 10 + i * 0.8) : 0.35;
-      const alpha = isVisited ? 0.9 : isActive ? 0.88 : 0.4;
+      const approachDim = spell.stage === "APPROACH" && !isStartNode ? 0.55 : 1;
+      const alpha = (isVisited ? 0.9 : isActive ? 0.92 : 0.4) * approachDim;
 
       ctx.fillStyle = isVisited
         ? `rgba(176, 233, 255, ${alpha.toFixed(3)})`
@@ -3123,9 +4392,35 @@ export class RuneGatesHUD {
       }
     }
 
+    if (spell.stage === "APPROACH" && startNodePx) {
+      const spotPulse = 0.5 + 0.5 * Math.sin(timeSec * 8.2);
+      const approachRadius = minDim * 0.074;
+      ctx.strokeStyle = breachRitual
+        ? `rgba(255, 168, 128, ${(0.55 + spotPulse * 0.3).toFixed(3)})`
+        : `rgba(150, 220, 255, ${(0.52 + spotPulse * 0.28).toFixed(3)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(startNodePx.x, startNodePx.y, approachRadius * (1 + spotPulse * 0.08), 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = breachRitual
+        ? `rgba(255, 196, 170, ${(0.22 + spotPulse * 0.2).toFixed(3)})`
+        : `rgba(189, 234, 255, ${(0.2 + spotPulse * 0.2).toFixed(3)})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(startNodePx.x, startNodePx.y, approachRadius * 1.42, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     const centerRadius = spell.snapTolerancePx;
     const centerPulse = 0.5 + 0.5 * Math.sin(timeSec * (snapReady ? 18 : 8));
-    const centerColor = snapReady ? "255, 198, 110" : "136, 216, 255";
+    const centerColor = snapReady
+      ? breachRitual
+        ? "255, 163, 98"
+        : "255, 198, 110"
+      : breachRitual
+        ? "255, 133, 108"
+        : "136, 216, 255";
     const centerAlpha = spell.stage === "SNAP" ? 0.86 : 0.28;
 
     ctx.strokeStyle = `rgba(${centerColor}, ${centerAlpha.toFixed(3)})`;
@@ -3150,10 +4445,32 @@ export class RuneGatesHUD {
       }
     }
 
-    const cueText =
-      spell.stage === "TRACE" ? "TRACE THE RUNE" : snapReady ? "SNAP TO CENTER" : "HOLD THE CHANNEL";
-    const cueSubText =
-      spell.stage === "TRACE"
+    const cueText = breachRitual
+      ? spell.stage === "APPROACH"
+        ? "TOUCH THE SEAL START"
+        : spell.stage === "TRACE"
+        ? "TRACE TO SEAL"
+        : snapReady
+          ? "SEAL NOW"
+          : "HOLD THE SEAL"
+      : spell.stage === "APPROACH"
+        ? "TOUCH THE START GLYPH"
+        : spell.stage === "TRACE"
+        ? "TRACE THE RUNE"
+        : snapReady
+          ? "SNAP TO CENTER"
+          : "HOLD THE CHANNEL";
+    const cueSubText = breachRitual
+      ? spell.stage === "APPROACH"
+        ? "Tracing starts the moment you reach the first node"
+        : spell.stage === "TRACE"
+        ? `Seal nodes ${Math.min(spell.currentNodeIndex, spell.nodes.length)}/${spell.nodes.length}`
+        : snapReady
+          ? "Center hold prevents breach"
+          : "Wait for the ritual pulse"
+      : spell.stage === "APPROACH"
+        ? "Tracing starts the moment you reach the first node"
+        : spell.stage === "TRACE"
         ? `Nodes ${Math.min(spell.currentNodeIndex, spell.nodes.length)}/${spell.nodes.length}`
         : snapReady
           ? "Center hold to win possession"
@@ -3162,7 +4479,13 @@ export class RuneGatesHUD {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.font = `700 ${clamp(minDim * 0.054, 18, 30)}px "Cinzel", "Trajan Pro", serif`;
-    ctx.fillStyle = snapReady ? "rgba(255, 226, 168, 0.96)" : "rgba(220, 240, 255, 0.9)";
+    ctx.fillStyle = snapReady
+      ? breachRitual
+        ? "rgba(255, 208, 152, 0.97)"
+        : "rgba(255, 226, 168, 0.96)"
+      : breachRitual
+        ? "rgba(255, 212, 196, 0.9)"
+        : "rgba(220, 240, 255, 0.9)";
     ctx.fillText(cueText, cx, padRect.y + minDim * 0.14);
     ctx.font = `600 ${clamp(minDim * 0.028, 12, 16)}px "Cinzel", "Trajan Pro", serif`;
     ctx.fillStyle = "rgba(213, 229, 242, 0.78)";
@@ -3187,8 +4510,26 @@ export class RuneGatesHUD {
     const fillWidth = meterWidth * remainingRatio;
     if (fillWidth > 0.5) {
       const bar = ctx.createLinearGradient(meterX, 0, meterX + meterWidth, 0);
-      bar.addColorStop(0, snapReady ? "rgba(255, 180, 104, 0.86)" : "rgba(120, 210, 255, 0.84)");
-      bar.addColorStop(1, snapReady ? "rgba(255, 231, 166, 0.94)" : "rgba(192, 234, 255, 0.96)");
+      bar.addColorStop(
+        0,
+        snapReady
+          ? breachRitual
+            ? "rgba(255, 150, 98, 0.9)"
+            : "rgba(255, 180, 104, 0.86)"
+          : breachRitual
+            ? "rgba(255, 130, 130, 0.86)"
+            : "rgba(120, 210, 255, 0.84)"
+      );
+      bar.addColorStop(
+        1,
+        snapReady
+          ? breachRitual
+            ? "rgba(255, 218, 170, 0.96)"
+            : "rgba(255, 231, 166, 0.94)"
+          : breachRitual
+            ? "rgba(255, 198, 178, 0.96)"
+            : "rgba(192, 234, 255, 0.96)"
+      );
       ctx.fillStyle = bar;
       ctx.beginPath();
       ctx.roundRect(meterX, meterY, fillWidth, meterHeight, meterHeight * 0.5);
@@ -3218,7 +4559,8 @@ export class RuneGatesHUD {
     const pressure = clamp(this.riftPressure, 0, 1);
     const fracture = clamp(1 - this.sealIntegrity, 0, 1);
     const breachPulse = clamp(this.breachSurgeTimer / 2.6, 0, 1);
-    if (pressure < 0.03 && fracture < 0.03 && breachPulse < 0.01) {
+    const propagation = Math.max(this.breachVisualPropagation, Math.max(fracture, pressure * 0.9, breachPulse));
+    if (pressure < 0.03 && fracture < 0.03 && breachPulse < 0.01 && propagation < 0.04) {
       return;
     }
 
@@ -3232,24 +4574,19 @@ export class RuneGatesHUD {
     ctx.roundRect(padRect.x, padRect.y, padRect.width, padRect.height, padRadius);
     ctx.clip();
 
-    // Ominous heat/lava tint that builds with pressure.
-    const heatAlpha = pressure * 0.14 + breachPulse * 0.18;
-    const heat = ctx.createRadialGradient(cx, cy + minDim * 0.12, minDim * 0.05, cx, cy + minDim * 0.12, minDim * 0.8);
-    heat.addColorStop(0, `rgba(255, 120, 70, ${(heatAlpha * 0.35).toFixed(3)})`);
-    heat.addColorStop(0.45, `rgba(255, 72, 44, ${(heatAlpha * 0.22).toFixed(3)})`);
-    heat.addColorStop(1, "rgba(255, 72, 44, 0)");
-    ctx.fillStyle = heat;
+    const substrate = ctx.createRadialGradient(cx, cy, minDim * 0.05, cx, cy, minDim * 0.76);
+    substrate.addColorStop(0, `rgba(212, 228, 240, ${(0.01 + propagation * 0.028).toFixed(3)})`);
+    substrate.addColorStop(0.55, `rgba(188, 208, 224, ${(0.006 + propagation * 0.018).toFixed(3)})`);
+    substrate.addColorStop(1, "rgba(188, 208, 224, 0)");
+    ctx.fillStyle = substrate;
     ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
 
-    this.renderCracksAndLava(ctx, padRect, fracture, pressure, timeSec, breachPulse);
-
-    if (pressure > 0.35 || breachPulse > 0.05) {
-      this.renderHellfireEdges(ctx, padRect, timeSec, pressure, breachPulse);
-    }
-
-    if (pressure > 0.58 || breachPulse > 0.1) {
-      this.renderMonsterPresence(ctx, padRect, timeSec, pressure, breachPulse);
-    }
+    this.renderSurfaceFissureAmplification(ctx, padRect, timeSec, propagation, breachPulse);
+    this.renderStressFractureLines(ctx, padRect, timeSec, propagation);
+    this.renderArcaneGlowLeakage(ctx, padRect, timeSec, propagation, breachPulse);
+    this.renderStructuralSeparation(ctx, padRect, timeSec, propagation, breachPulse);
+    this.renderBreachCoreSink(ctx, padRect, timeSec, propagation, breachPulse);
+    this.renderFrostDrift(ctx, padRect, timeSec, propagation, breachPulse);
 
     const breachOutroProgress =
       this.endReason === "breach" && this.breachOutroTimer > 0
@@ -3267,8 +4604,19 @@ export class RuneGatesHUD {
     }
 
     if (breachPulse > 0.02) {
-      const flash = Math.sin(timeSec * 22) * 0.5 + 0.5;
-      ctx.fillStyle = `rgba(255, 118, 78, ${(breachPulse * (0.04 + flash * 0.05)).toFixed(3)})`;
+      const palette = this.getBreachThemePalette();
+      const flash = Math.sin(timeSec * 16) * 0.5 + 0.5;
+      const pulseWash = ctx.createRadialGradient(cx, cy, minDim * 0.06, cx, cy, minDim * 0.92);
+      pulseWash.addColorStop(
+        0,
+        `rgba(${palette.leakCore}, ${(breachPulse * (0.016 + flash * 0.028)).toFixed(3)})`
+      );
+      pulseWash.addColorStop(
+        0.55,
+        `rgba(${palette.leakOuter}, ${(breachPulse * (0.009 + flash * 0.014)).toFixed(3)})`
+      );
+      pulseWash.addColorStop(1, `rgba(${palette.leakOuter}, 0)`);
+      ctx.fillStyle = pulseWash;
       ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
     }
 
@@ -3282,6 +4630,7 @@ export class RuneGatesHUD {
     progress: number,
     breachPulse: number
   ): void {
+    const palette = this.getBreachThemePalette();
     const minDim = Math.min(padRect.width, padRect.height);
     const cx = padRect.x + padRect.width * 0.5;
     const cy = padRect.y + padRect.height * 0.5;
@@ -3303,9 +4652,9 @@ export class RuneGatesHUD {
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(timeSec * (0.8 + i * 0.22) * (i % 2 ? -1 : 1) * quake);
-      ctx.strokeStyle = `rgba(255, ${200 - i * 22}, ${120 - i * 10}, ${alpha.toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${palette.leakCore}, ${alpha.toFixed(3)})`;
       ctx.lineWidth = 1.8 + (1 - t) * 1.4;
-      ctx.shadowColor = `rgba(255, 134, 82, ${(alpha * 0.75).toFixed(3)})`;
+      ctx.shadowColor = `rgba(${palette.leakOuter}, ${(alpha * 0.75).toFixed(3)})`;
       ctx.shadowBlur = 10 + (1 - t) * 8 + (power - 1) * 4;
       ctx.beginPath();
       for (let s = 0; s < 8; s += 1) {
@@ -3321,11 +4670,14 @@ export class RuneGatesHUD {
     const riftGlow = ctx.createRadialGradient(cx, cy, minDim * 0.03, cx, cy, minDim * 0.42);
     riftGlow.addColorStop(
       0,
-      `rgba(255, 243, 214, ${(0.08 + progress * 0.28 + pulse * 0.08 + (power - 1) * 0.05).toFixed(3)})`
+      `rgba(${palette.edgeLight}, ${(0.08 + progress * 0.28 + pulse * 0.08 + (power - 1) * 0.05).toFixed(3)})`
     );
-    riftGlow.addColorStop(0.35, `rgba(255, 122, 76, ${(0.12 + progress * 0.22 + (power - 1) * 0.04).toFixed(3)})`);
-    riftGlow.addColorStop(0.75, `rgba(199, 48, 24, ${(0.05 + progress * 0.12 + (power - 1) * 0.02).toFixed(3)})`);
-    riftGlow.addColorStop(1, "rgba(199, 48, 24, 0)");
+    riftGlow.addColorStop(
+      0.35,
+      `rgba(${palette.leakCore}, ${(0.12 + progress * 0.22 + (power - 1) * 0.04).toFixed(3)})`
+    );
+    riftGlow.addColorStop(0.75, `rgba(${palette.leakOuter}, ${(0.05 + progress * 0.12 + (power - 1) * 0.02).toFixed(3)})`);
+    riftGlow.addColorStop(1, `rgba(${palette.leakOuter}, 0)`);
     ctx.fillStyle = riftGlow;
     ctx.beginPath();
     ctx.arc(cx, cy, minDim * (0.18 + progress * 0.28), 0, Math.PI * 2);
@@ -3334,14 +4686,14 @@ export class RuneGatesHUD {
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(Math.sin(timeSec * 3.6) * 0.04);
-    ctx.shadowColor = `rgba(255, 126, 84, ${(0.22 + progress * 0.38).toFixed(3)})`;
+    ctx.shadowColor = `rgba(${palette.leakCore}, ${(0.22 + progress * 0.38).toFixed(3)})`;
     ctx.shadowBlur = 18 + progress * 18 + (power - 1) * 8;
-    ctx.fillStyle = `rgba(12, 5, 6, ${(0.55 + progress * 0.35).toFixed(3)})`;
+    ctx.fillStyle = `rgba(${palette.depthDark}, ${(0.55 + progress * 0.35).toFixed(3)})`;
     ctx.beginPath();
     ctx.ellipse(0, 0, slitWidth, slitHeight, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = `rgba(255, 188, 138, ${(0.12 + progress * 0.36 + pulse * 0.08).toFixed(3)})`;
+    ctx.strokeStyle = `rgba(${palette.edgeLight}, ${(0.12 + progress * 0.36 + pulse * 0.08).toFixed(3)})`;
     ctx.lineWidth = 1.2 + progress * 2.2;
     ctx.beginPath();
     ctx.ellipse(0, 0, slitWidth * 1.02, slitHeight * 1.02, 0, 0, Math.PI * 2);
@@ -3360,9 +4712,9 @@ export class RuneGatesHUD {
       const x1 = cx + Math.cos(a) * (outer + jitter);
       const y1 = cy + Math.sin(a) * (outer + jitter);
       ctx.save();
-      ctx.strokeStyle = `rgba(255, ${126 + (i % 3) * 20}, 78, ${(0.1 + progress * 0.26).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${palette.leakCore}, ${(0.1 + progress * 0.26).toFixed(3)})`;
       ctx.lineWidth = 1.4 + (i % 2) * 0.9;
-      ctx.shadowColor = `rgba(255, 116, 76, ${(0.08 + progress * 0.18).toFixed(3)})`;
+      ctx.shadowColor = `rgba(${palette.leakOuter}, ${(0.08 + progress * 0.18).toFixed(3)})`;
       ctx.shadowBlur = 10 + (power - 1) * 4;
       ctx.beginPath();
       ctx.moveTo(x0, y0);
@@ -3375,10 +4727,81 @@ export class RuneGatesHUD {
       const whiteFlash =
         clamp((progress - 0.72) / 0.18, 0, 1) * (1 - clamp((progress - 0.9) / 0.1, 0, 1) * 0.8);
       if (whiteFlash > 0.01) {
-        ctx.fillStyle = `rgba(255, 244, 224, ${(whiteFlash * (0.16 + (power - 1) * 0.06)).toFixed(3)})`;
+        ctx.fillStyle = `rgba(${palette.edgeLight}, ${(whiteFlash * (0.16 + (power - 1) * 0.06)).toFixed(3)})`;
         ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
       }
     }
+  }
+
+  private renderBreachCoreSink(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    propagation: number,
+    breachPulse: number
+  ): void {
+    const strength = clamp((propagation - 0.42) * 1.6 + breachPulse * 0.6, 0, 1);
+    if (strength <= 0.05) {
+      return;
+    }
+    const palette = this.getBreachThemePalette();
+    const minDim = Math.min(padRect.width, padRect.height);
+    const cx = padRect.x + padRect.width * 0.5;
+    const cy = padRect.y + padRect.height * 0.5;
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * (4.2 + strength * 2.4));
+    const sinkRadius = minDim * (0.07 + strength * 0.18);
+    const ringRadius = minDim * (0.15 + strength * 0.22);
+
+    const compression = ctx.createRadialGradient(cx, cy, sinkRadius * 0.2, cx, cy, ringRadius * 1.2);
+    compression.addColorStop(0, `rgba(${palette.depthDark}, ${(0.08 + strength * 0.2).toFixed(3)})`);
+    compression.addColorStop(0.45, `rgba(${palette.leakOuter}, ${(0.03 + strength * 0.08).toFixed(3)})`);
+    compression.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = compression;
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringRadius * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(timeSec * 0.42);
+    const ringCount = 3;
+    for (let i = 0; i < ringCount; i += 1) {
+      const r = ringRadius * (0.72 + i * 0.2);
+      const alpha = (0.06 + strength * 0.16) * (1 - i * 0.24) * (0.7 + pulse * 0.3);
+      ctx.strokeStyle = `rgba(${palette.edgeLight}, ${alpha.toFixed(3)})`;
+      ctx.lineWidth = 1.1 + i * 0.35;
+      ctx.beginPath();
+      for (let s = 0; s < 10; s += 1) {
+        const a0 = (Math.PI * 2 * s) / 10 + i * 0.06;
+        const a1 = a0 + 0.14 + (pulse - 0.5) * 0.04;
+        ctx.arc(0, 0, r, a0, a1);
+      }
+      ctx.stroke();
+      ctx.rotate(i % 2 === 0 ? -0.2 : 0.17);
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.sin(timeSec * 2.8) * 0.05);
+    ctx.fillStyle = `rgba(${palette.depthDark}, ${(0.28 + strength * 0.34).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.ellipse(
+      0,
+      0,
+      sinkRadius * (0.84 + pulse * 0.08),
+      sinkRadius * (1.18 + pulse * 0.06),
+      0,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${palette.edgeLight}, ${(0.08 + strength * 0.2).toFixed(3)})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, sinkRadius * 0.94, sinkRadius * 1.28, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   private renderFinishOutro(
@@ -3474,151 +4897,469 @@ export class RuneGatesHUD {
     }
   }
 
-  private renderCracksAndLava(
+  private buildBreachFracturePaths(): BreachFracturePath[] {
+    const paths: BreachFracturePath[] = [];
+    const spokeCount = 16;
+    const spokeNodeCount = 9;
+    const spokes: Point[][] = [];
+
+    for (let i = 0; i < spokeCount; i += 1) {
+      const seed = i + 1;
+      const angleJitter = (seededUnit(seed * 4.1) - 0.5) * 0.14;
+      const angle = (Math.PI * 2 * i) / spokeCount + angleJitter;
+      const nodes: Point[] = [];
+      for (let nodeIndex = 0; nodeIndex < spokeNodeCount; nodeIndex += 1) {
+        const t = nodeIndex / (spokeNodeCount - 1);
+        const radial = 0.048 + t * (0.61 + (seededUnit(seed * 7.3) - 0.5) * 0.1);
+        const wobble = (seededUnit(seed * 8.7 + nodeIndex * 0.97) - 0.5) * (0.008 + t * 0.03);
+        const bend = Math.sin((t * 2.4 + seededUnit(seed * 1.9)) * Math.PI * 2) * (0.004 + t * 0.009);
+        const x = 0.5 + Math.cos(angle) * radial + Math.cos(angle + Math.PI / 2) * (wobble + bend);
+        const y = 0.5 + Math.sin(angle) * radial + Math.sin(angle + Math.PI / 2) * (wobble + bend * 1.08);
+        nodes.push({
+          x: clamp(x, 0.04, 0.96),
+          y: clamp(y, 0.05, 0.95)
+        });
+      }
+      spokes.push(nodes);
+
+      paths.push({
+        kind: "RADIAL",
+        nodes,
+        activation: clamp((i / spokeCount) * 0.52, 0, 0.68),
+        major: i % 2 === 0,
+        thickness: 0.88 + seededUnit(seed * 2.7) * 0.72,
+        maskPhase: seededUnit(seed * 9.2) * Math.PI * 2
+      });
+
+      if (i % 2 === 0) {
+        const anchorIndex = 2 + Math.floor(seededUnit(seed * 11.4) * 4);
+        const anchor = nodes[Math.min(nodes.length - 2, anchorIndex)] ?? nodes[Math.max(0, nodes.length - 2)];
+        const turn = seededUnit(seed * 12.8) > 0.5 ? 1 : -1;
+        const branchAngle = angle + turn * (0.32 + seededUnit(seed * 13.7) * 0.3);
+        const branchNodes: Point[] = [anchor];
+        const branchNodeCount = 6;
+        for (let nodeIndex = 1; nodeIndex < branchNodeCount; nodeIndex += 1) {
+          const t = nodeIndex / (branchNodeCount - 1);
+          const radial = 0.075 + t * (0.21 + seededUnit(seed * 14.3) * 0.12);
+          const wobble = (seededUnit(seed * 15.8 + nodeIndex * 1.1) - 0.5) * (0.009 + t * 0.018);
+          const x = anchor.x + Math.cos(branchAngle) * radial + Math.cos(branchAngle + Math.PI / 2) * wobble;
+          const y = anchor.y + Math.sin(branchAngle) * radial + Math.sin(branchAngle + Math.PI / 2) * wobble * 1.06;
+          branchNodes.push({
+            x: clamp(x, 0.04, 0.96),
+            y: clamp(y, 0.05, 0.95)
+          });
+        }
+        paths.push({
+          kind: "BRANCH",
+          nodes: branchNodes,
+          activation: clamp(0.2 + (i / spokeCount) * 0.52, 0.14, 0.88),
+          major: false,
+          thickness: 0.6 + seededUnit(seed * 17.4) * 0.46,
+          maskPhase: seededUnit(seed * 18.2) * Math.PI * 2
+        });
+      }
+    }
+
+    // Circumferential links between radial spokes help the fracture look structural.
+    const ringLevels = [2, 3, 4, 5, 6];
+    for (let levelIndex = 0; levelIndex < ringLevels.length; levelIndex += 1) {
+      const level = ringLevels[levelIndex] ?? 2;
+      const levelRatio = ringLevels.length <= 1 ? 0 : levelIndex / (ringLevels.length - 1);
+      for (let i = 0; i < spokeCount; i += 1) {
+        const skipChance = 0.12 + levelRatio * 0.18;
+        if (seededUnit((level + 1) * 37.1 + i * 4.7) < skipChance) {
+          continue;
+        }
+        const fromSpoke = spokes[i];
+        const toSpoke = spokes[(i + 1) % spokeCount];
+        if (!fromSpoke || !toSpoke) {
+          continue;
+        }
+        const from = fromSpoke[Math.min(level, fromSpoke.length - 1)];
+        const to = toSpoke[Math.min(level, toSpoke.length - 1)];
+        if (!from || !to) {
+          continue;
+        }
+
+        const midX = (from.x + to.x) * 0.5;
+        const midY = (from.y + to.y) * 0.5;
+        const radialX = midX - 0.5;
+        const radialY = midY - 0.5;
+        const radialLen = Math.hypot(radialX, radialY) || 1;
+        const normalX = -radialY / radialLen;
+        const normalY = radialX / radialLen;
+        const bendDir = seededUnit((level + 5) * 11.3 + i * 3.1) > 0.5 ? 1 : -1;
+        const bendAmt = (0.008 + levelRatio * 0.02) * bendDir;
+        const mid: Point = {
+          x: clamp(midX + normalX * bendAmt, 0.04, 0.96),
+          y: clamp(midY + normalY * bendAmt, 0.05, 0.95)
+        };
+
+        paths.push({
+          kind: "RING",
+          nodes: [from, mid, to],
+          activation: clamp(0.14 + levelRatio * 0.58 + (i / spokeCount) * 0.08, 0.12, 0.92),
+          major: false,
+          thickness: 0.48 + seededUnit((level + 3) * 19.9 + i * 1.9) * 0.42,
+          maskPhase: seededUnit((level + 4) * 13.7 + i * 2.3) * Math.PI * 2
+        });
+      }
+    }
+
+    return paths;
+  }
+
+  private buildBreachFrostSeeds(): BreachFrostSeed[] {
+    const seeds: BreachFrostSeed[] = [];
+    const count = 30;
+    for (let i = 0; i < count; i += 1) {
+      const seed = i + 1;
+      seeds.push({
+        lane: seededUnit(seed * 2.2),
+        riseRate: 0.055 + seededUnit(seed * 3.7) * 0.095,
+        drift: (seededUnit(seed * 4.9) - 0.5) * 0.035,
+        size: 0.9 + seededUnit(seed * 6.4) * 2.2,
+        phase: seededUnit(seed * 7.8)
+      });
+    }
+    return seeds;
+  }
+
+  private getBreachThemePalette(): BreachThemePalette {
+    switch (this.monsterTeam.archetype) {
+      case "INFERNAL":
+        return {
+          hairline: "166, 186, 203",
+          hairlineMask: "222, 233, 242",
+          leakCore: "234, 116, 70",
+          leakOuter: "138, 66, 44",
+          depthDark: "136, 154, 168",
+          edgeLight: "236, 246, 255",
+          frost: "236, 232, 221"
+        };
+      case "FROST":
+        return {
+          hairline: "170, 194, 212",
+          hairlineMask: "228, 241, 252",
+          leakCore: "170, 203, 232",
+          leakOuter: "96, 126, 156",
+          depthDark: "142, 166, 184",
+          edgeLight: "240, 248, 255",
+          frost: "235, 243, 250"
+        };
+      case "SHADOW":
+        return {
+          hairline: "162, 176, 196",
+          hairlineMask: "219, 226, 240",
+          leakCore: "178, 132, 205",
+          leakOuter: "102, 72, 128",
+          depthDark: "134, 146, 168",
+          edgeLight: "230, 236, 248",
+          frost: "229, 227, 238"
+        };
+      case "UNDEAD":
+      default:
+        return {
+          hairline: "165, 184, 201",
+          hairlineMask: "222, 234, 245",
+          leakCore: "219, 152, 96",
+          leakOuter: "126, 82, 54",
+          depthDark: "138, 154, 170",
+          edgeLight: "235, 244, 252",
+          frost: "223, 231, 236"
+        };
+    }
+  }
+
+  private getFractureReveal(path: BreachFracturePath, propagation: number): number {
+    if (propagation <= path.activation) {
+      return 0;
+    }
+    return clamp((propagation - path.activation) / Math.max(0.1, 1 - path.activation), 0, 1);
+  }
+
+  private tracePartialFracturePath(
     ctx: CanvasRenderingContext2D,
     padRect: Rect,
-    fracture: number,
-    pressure: number,
+    path: BreachFracturePath,
+    reveal: number,
+    offsetX = 0,
+    offsetY = 0
+  ): void {
+    if (reveal <= 0 || path.nodes.length < 2) {
+      return;
+    }
+    const maxStep = clamp(reveal, 0, 0.999999) * (path.nodes.length - 1);
+    const fullSteps = Math.floor(maxStep);
+    const partial = maxStep - fullSteps;
+    const first = padToPixel(padRect, path.nodes[0]);
+    ctx.beginPath();
+    ctx.moveTo(first.x + offsetX, first.y + offsetY);
+    for (let i = 1; i <= fullSteps; i += 1) {
+      const node = padToPixel(padRect, path.nodes[i] ?? path.nodes[path.nodes.length - 1]);
+      ctx.lineTo(node.x + offsetX, node.y + offsetY);
+    }
+    if (fullSteps < path.nodes.length - 1) {
+      const from = path.nodes[fullSteps] ?? path.nodes[path.nodes.length - 2];
+      const to = path.nodes[fullSteps + 1] ?? path.nodes[path.nodes.length - 1];
+      const partialNode: Point = {
+        x: from.x + (to.x - from.x) * partial,
+        y: from.y + (to.y - from.y) * partial
+      };
+      const pixel = padToPixel(padRect, partialNode);
+      ctx.lineTo(pixel.x + offsetX, pixel.y + offsetY);
+    }
+  }
+
+  private renderSurfaceFissureAmplification(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
     timeSec: number,
+    propagation: number,
     breachPulse: number
   ): void {
-    if (fracture < 0.08 && breachPulse < 0.05) {
+    const strength = clamp((propagation - 0.04) * 1.12 + breachPulse * 0.46, 0, 1);
+    if (strength <= 0.04) {
       return;
     }
 
+    const minDim = Math.min(padRect.width, padRect.height);
     const cx = padRect.x + padRect.width * 0.5;
     const cy = padRect.y + padRect.height * 0.5;
-    const rx = padRect.width * 0.46;
-    const ry = padRect.height * 0.42;
-    const crackCount = 4 + Math.floor(fracture * 8) + (breachPulse > 0.1 ? 2 : 0);
-    const crackAlpha = Math.min(0.45, 0.08 + fracture * 0.35 + breachPulse * 0.22);
-    const lavaAlpha = Math.max(0, (fracture - 0.18) * 0.45 + breachPulse * 0.4 + pressure * 0.12);
+    const revealRadius = minDim * (0.09 + propagation * 0.72);
+    const drift = timeSec * (1.4 + strength * 2.1);
+    const ringCount = 4;
 
-    for (let i = 0; i < crackCount; i += 1) {
-      const angle = (Math.PI * 2 * i) / crackCount + Math.sin(i * 4.3) * 0.22;
-      const edgeX = cx + Math.cos(angle) * rx;
-      const edgeY = cy + Math.sin(angle) * ry;
-      const innerX = cx + Math.cos(angle) * (rx * (0.14 + ((i % 3) * 0.05))) + Math.sin(i * 1.9) * padRect.width * 0.03;
-      const innerY = cy + Math.sin(angle) * (ry * (0.14 + ((i % 2) * 0.06))) + Math.cos(i * 1.6) * padRect.height * 0.025;
-
-      const segs = 6;
-      ctx.beginPath();
-      for (let s = 0; s <= segs; s += 1) {
-        const t = s / segs;
-        const wobble = (1 - t) * (6 + fracture * 10);
-        const wobbleX = Math.sin(i * 9.2 + s * 1.3) * wobble;
-        const wobbleY = Math.cos(i * 7.7 + s * 1.1) * wobble;
-        const x = edgeX + (innerX - edgeX) * t + wobbleX;
-        const y = edgeY + (innerY - edgeY) * t + wobbleY;
-        if (s === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
+    for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
+      const t0 = ringIndex / ringCount;
+      const t1 = (ringIndex + 1) / ringCount;
+      const innerRadius = revealRadius * t0;
+      const outerRadius = revealRadius * t1;
+      const ringFalloff = 1 - t0 * 0.78;
+      const alphaBase = (0.014 + strength * 0.06) * ringFalloff;
 
       ctx.save();
-      ctx.strokeStyle = `rgba(6, 10, 14, ${crackAlpha.toFixed(3)})`;
-      ctx.lineWidth = 2.2 + fracture * 1.6;
-      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2, true);
+      ctx.clip("evenodd");
+
+      drawTiledRuntimeTexture(ctx, padRect, BREACH_FISSURE_TEXTURE, {
+        alpha: alphaBase,
+        tileScale: clamp(padRect.width / 1320, 0.28, 0.52),
+        driftX: drift * (0.42 + ringIndex * 0.07),
+        driftY: -drift * (0.21 + ringIndex * 0.06),
+        composite: "soft-light"
+      });
+      drawTiledRuntimeTexture(ctx, padRect, BREACH_ROUGH_TEXTURE, {
+        alpha: alphaBase * 0.7,
+        tileScale: clamp(padRect.width / 1780, 0.24, 0.44),
+        driftX: -drift * (0.26 + ringIndex * 0.04),
+        driftY: drift * 0.12,
+        composite: "overlay"
+      });
+      drawTiledRuntimeTexture(ctx, padRect, BREACH_DISPLACE_TEXTURE, {
+        alpha: alphaBase * 0.46,
+        tileScale: clamp(padRect.width / 1840, 0.24, 0.44),
+        driftX: drift * 0.1,
+        driftY: -drift * 0.08,
+        composite: "screen"
+      });
+      ctx.restore();
+    }
+
+    const coreCompression = ctx.createRadialGradient(
+      cx,
+      cy,
+      minDim * 0.02,
+      cx,
+      cy,
+      revealRadius * 1.14
+    );
+    coreCompression.addColorStop(0, `rgba(222, 236, 247, ${(0.014 + strength * 0.035).toFixed(3)})`);
+    coreCompression.addColorStop(0.5, `rgba(197, 216, 232, ${(0.008 + strength * 0.02).toFixed(3)})`);
+    coreCompression.addColorStop(1, "rgba(197, 216, 232, 0)");
+    ctx.fillStyle = coreCompression;
+    ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
+  }
+
+  private renderStressFractureLines(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    propagation: number
+  ): void {
+    if (propagation < 0.06) {
+      return;
+    }
+    const palette = this.getBreachThemePalette();
+    const baseAlpha = clamp(0.04 + propagation * 0.2, 0, 0.26);
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const path of this.breachFracturePaths) {
+      const reveal = this.getFractureReveal(path, propagation);
+      if (reveal <= 0.01) {
+        continue;
+      }
+      const maskPulse = 0.5 + 0.5 * Math.sin(timeSec * (1.2 + path.thickness * 0.38) + path.maskPhase + reveal * 2.4);
+      const kindScale = path.kind === "RADIAL" ? 1 : path.kind === "BRANCH" ? 0.85 : 0.72;
+      const lineAlpha = baseAlpha * (0.35 + reveal * 0.64) * kindScale;
+      const baseWidth =
+        path.kind === "RADIAL"
+          ? 0.56 + path.thickness * 0.48
+          : path.kind === "BRANCH"
+            ? 0.44 + path.thickness * 0.34
+            : 0.34 + path.thickness * 0.24;
+
+      this.tracePartialFracturePath(ctx, padRect, path, reveal);
+      ctx.strokeStyle = `rgba(${palette.hairline}, ${lineAlpha.toFixed(3)})`;
+      ctx.lineWidth = baseWidth * 0.88;
       ctx.stroke();
 
-      if (lavaAlpha > 0.02) {
-        const pulse = 0.5 + 0.5 * Math.sin(timeSec * 6.5 + i * 1.7);
-        ctx.strokeStyle = `rgba(255, 116, 64, ${(lavaAlpha * (0.45 + pulse * 0.35)).toFixed(3)})`;
-        ctx.shadowColor = `rgba(255, 120, 70, ${(lavaAlpha * 0.5).toFixed(3)})`;
-        ctx.shadowBlur = 10;
-        ctx.lineWidth = 1.0 + fracture * 0.8;
-        ctx.stroke();
+      // Chalky high edge to sell fresh stress on top of existing ice fissure texture.
+      this.tracePartialFracturePath(ctx, padRect, path, reveal * (0.9 + maskPulse * 0.1));
+      ctx.strokeStyle = `rgba(${palette.hairlineMask}, ${(lineAlpha * (0.22 + maskPulse * 0.3)).toFixed(3)})`;
+      ctx.lineWidth = Math.max(0.25, baseWidth * 0.66);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private renderArcaneGlowLeakage(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    propagation: number,
+    breachPulse: number
+  ): void {
+    const glowStrength = clamp(propagation * 0.7 + breachPulse * 0.9, 0, 1);
+    if (glowStrength < 0.08) {
+      return;
+    }
+    const palette = this.getBreachThemePalette();
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * (2.2 + glowStrength * 3));
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.globalCompositeOperation = "screen";
+    for (const path of this.breachFracturePaths) {
+      const reveal = this.getFractureReveal(path, propagation);
+      if (reveal < 0.12) {
+        continue;
       }
-      ctx.restore();
+      const kindScale = path.kind === "RADIAL" ? 1 : path.kind === "BRANCH" ? 0.72 : 0.54;
+      const leak = clamp(glowStrength * (0.2 + reveal * 0.72) * (0.58 + pulse * 0.42) * kindScale, 0, 1);
+      this.tracePartialFracturePath(ctx, padRect, path, reveal);
+      ctx.strokeStyle = `rgba(${palette.leakOuter}, ${(0.01 + leak * 0.068).toFixed(3)})`;
+      ctx.shadowColor = `rgba(${palette.leakCore}, ${(0.03 + leak * 0.12).toFixed(3)})`;
+      ctx.shadowBlur = 4 + leak * 9;
+      ctx.lineWidth = 0.92 + path.thickness * (path.kind === "RING" ? 0.48 : 0.72) + reveal * 0.54;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
     }
+    ctx.restore();
   }
 
-  private renderHellfireEdges(
+  private renderStructuralSeparation(
     ctx: CanvasRenderingContext2D,
     padRect: Rect,
     timeSec: number,
-    pressure: number,
+    propagation: number,
     breachPulse: number
   ): void {
-    const flames = 5 + Math.floor(pressure * 8);
-    const baseY = padRect.y + padRect.height - 3;
-    const width = padRect.width / flames;
-    const amp = (padRect.height * 0.035 + pressure * padRect.height * 0.06) * (1 + breachPulse * 0.35);
-
-    for (let i = 0; i < flames; i += 1) {
-      const x0 = padRect.x + i * width;
-      const x1 = x0 + width;
-      const phase = timeSec * (1.7 + (i % 3) * 0.22) + i * 0.9;
-      const h1 = amp * (0.55 + 0.45 * (Math.sin(phase) * 0.5 + 0.5));
-      const h2 = amp * (0.45 + 0.55 * (Math.cos(phase * 1.2) * 0.5 + 0.5));
-
-      const flame = ctx.createLinearGradient(0, baseY - amp * 1.2, 0, baseY);
-      flame.addColorStop(0, `rgba(255, 209, 122, ${(0.04 + pressure * 0.05 + breachPulse * 0.06).toFixed(3)})`);
-      flame.addColorStop(0.5, `rgba(255, 102, 64, ${(0.06 + pressure * 0.08 + breachPulse * 0.08).toFixed(3)})`);
-      flame.addColorStop(1, "rgba(255, 72, 44, 0)");
-
-      ctx.save();
-      ctx.fillStyle = flame;
-      ctx.beginPath();
-      ctx.moveTo(x0, baseY);
-      ctx.lineTo(x0, baseY - h1 * 0.35);
-      ctx.quadraticCurveTo(x0 + width * 0.25, baseY - h1, x0 + width * 0.5, baseY - h2 * 0.55);
-      ctx.quadraticCurveTo(x0 + width * 0.75, baseY - h2, x1, baseY - h1 * 0.28);
-      ctx.lineTo(x1, baseY);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  private renderMonsterPresence(
-    ctx: CanvasRenderingContext2D,
-    padRect: Rect,
-    timeSec: number,
-    pressure: number,
-    breachPulse: number
-  ): void {
-    const alpha = Math.min(0.45, (pressure - 0.5) * 0.5 + breachPulse * 0.28);
-    if (alpha <= 0) {
+    const depthStrength = clamp((propagation - 0.16) * 1.35 + breachPulse * 0.56, 0, 1);
+    if (depthStrength < 0.06) {
       return;
     }
 
-    const cx = padRect.x + padRect.width * 0.5;
-    const topY = padRect.y + padRect.height * 0.16;
-    const eyeSpread = padRect.width * 0.11;
-    const eyeY = topY + Math.sin(timeSec * 1.3) * 2;
-    const eyePulse = 0.5 + 0.5 * Math.sin(timeSec * 7.8);
+    const palette = this.getBreachThemePalette();
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    for (const path of this.breachFracturePaths) {
+      const reveal = this.getFractureReveal(path, propagation);
+      if (reveal < 0.16) {
+        continue;
+      }
+      if (path.kind === "RING" && reveal < 0.58) {
+        continue;
+      }
+      if (!path.major && path.kind !== "RING" && reveal < 0.42) {
+        continue;
+      }
+
+      const first = path.nodes[0];
+      const last = path.nodes[path.nodes.length - 1];
+      const dx = last.x - first.x;
+      const dy = last.y - first.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const normalX = -dy / length;
+      const normalY = dx / length;
+      const kindDepthScale = path.kind === "RADIAL" ? 1 : path.kind === "BRANCH" ? 0.78 : 0.58;
+      const parallax = (0.5 + 0.5 * Math.sin(timeSec * 4.8 + path.maskPhase)) * (0.7 + depthStrength * 1.1);
+      const shiftPx = (0.28 + depthStrength * 1.24) * (path.major ? 1 : 0.62) * kindDepthScale * parallax;
+      const depthOffsetX = normalX * shiftPx;
+      const depthOffsetY = normalY * shiftPx;
+      const trenchWidth =
+        (path.kind === "RADIAL" ? 0.85 : path.kind === "BRANCH" ? 0.72 : 0.56) +
+        path.thickness * (path.kind === "RING" ? 0.42 : 0.62) +
+        depthStrength * (path.major ? 1.15 : 0.7) * kindDepthScale;
+
+      this.tracePartialFracturePath(ctx, padRect, path, reveal, depthOffsetX, depthOffsetY);
+      ctx.strokeStyle = `rgba(${palette.depthDark}, ${(0.06 + depthStrength * 0.14 * kindDepthScale).toFixed(3)})`;
+      ctx.lineWidth = trenchWidth;
+      ctx.stroke();
+
+      this.tracePartialFracturePath(ctx, padRect, path, reveal, normalX * (-0.65 - depthStrength * 1.1), normalY * (-0.65 - depthStrength * 1.1));
+      ctx.strokeStyle = `rgba(${palette.edgeLight}, ${(0.08 + depthStrength * 0.16 * kindDepthScale).toFixed(3)})`;
+      ctx.lineWidth = 0.62 + path.thickness * 0.28 * kindDepthScale;
+      ctx.stroke();
+
+      this.tracePartialFracturePath(ctx, padRect, path, reveal, depthOffsetX * 0.42, depthOffsetY * 0.42);
+      ctx.strokeStyle = `rgba(${palette.hairline}, ${(0.05 + depthStrength * 0.08 * kindDepthScale).toFixed(3)})`;
+      ctx.lineWidth = 0.56 + path.thickness * 0.26 * kindDepthScale + depthStrength * 0.3;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private renderFrostDrift(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    propagation: number,
+    breachPulse: number
+  ): void {
+    const frostStrength = clamp((propagation - 0.1) * 0.95 + breachPulse * 0.4, 0, 1);
+    if (frostStrength <= 0.04) {
+      return;
+    }
+    const palette = this.getBreachThemePalette();
+    const count = Math.max(6, Math.floor(8 + frostStrength * (this.breachFrostSeeds.length - 8)));
 
     ctx.save();
-    ctx.fillStyle = `rgba(2, 4, 7, ${(alpha * 0.55).toFixed(3)})`;
-    // Keep monster presence readable without a hard top-center "bar" silhouette.
-    const browHaze = ctx.createRadialGradient(cx, topY, 2, cx, topY + padRect.height * 0.01, padRect.width * 0.2);
-    browHaze.addColorStop(0, `rgba(7, 10, 14, ${(alpha * 0.12).toFixed(3)})`);
-    browHaze.addColorStop(0.45, `rgba(4, 7, 10, ${(alpha * 0.08).toFixed(3)})`);
-    browHaze.addColorStop(1, "rgba(2, 4, 7, 0)");
-    ctx.fillStyle = browHaze;
-    ctx.beginPath();
-    ctx.ellipse(cx, topY + padRect.height * 0.01, padRect.width * 0.18, padRect.height * 0.08, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = `rgba(2, 4, 7, ${(alpha * 0.55).toFixed(3)})`;
-    ctx.beginPath();
-    ctx.ellipse(padRect.x + padRect.width * 0.09, padRect.y + padRect.height * 0.52, padRect.width * 0.09, padRect.height * 0.15, 0.45, 0, Math.PI * 2);
-    ctx.ellipse(padRect.x + padRect.width * 0.91, padRect.y + padRect.height * 0.5, padRect.width * 0.09, padRect.height * 0.15, -0.45, 0, Math.PI * 2);
-    ctx.fill();
+    for (let i = 0; i < count; i += 1) {
+      const seed = this.breachFrostSeeds[i];
+      if (!seed) {
+        continue;
+      }
+      const progress = (timeSec * seed.riseRate + seed.phase) % 1;
+      const driftWave = Math.sin(timeSec * (0.86 + Math.abs(seed.drift) * 18) + seed.phase * Math.PI * 2);
+      const x =
+        padRect.x +
+        padRect.width * (0.08 + seed.lane * 0.84) +
+        driftWave * padRect.width * (0.01 + Math.abs(seed.drift) * 0.55);
+      const y = padRect.y + padRect.height * (0.96 - progress * 0.9);
+      const alpha = clamp((0.03 + frostStrength * 0.12) * (0.35 + (1 - progress) * 0.9), 0.02, 0.18);
+      const radius = seed.size * (0.6 + (1 - progress) * 0.42);
 
-    const eyeGlow = (0.18 + eyePulse * 0.22 + breachPulse * 0.18) * alpha;
-    for (const ex of [cx - eyeSpread, cx + eyeSpread]) {
-      ctx.shadowColor = `rgba(255, 96, 70, ${(eyeGlow * 0.9).toFixed(3)})`;
-      ctx.shadowBlur = 14;
-      ctx.fillStyle = `rgba(255, 113, 84, ${(eyeGlow * 0.95).toFixed(3)})`;
+      ctx.fillStyle = `rgba(${palette.frost}, ${alpha.toFixed(3)})`;
       ctx.beginPath();
-      ctx.ellipse(ex, eyeY, 6 + eyePulse * 1.5, 2.2 + eyePulse * 0.5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = `rgba(255, 230, 190, ${(eyeGlow * 0.55).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(ex + 1, eyeY - 0.4, 1.1, 0, Math.PI * 2);
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();

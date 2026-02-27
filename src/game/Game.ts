@@ -1,9 +1,9 @@
 import { MousePuckProvider } from "../providers/MousePuckProvider";
-import { computePadBounds } from "../tracking/PadRenderer2D";
+import { computePadBounds, type Rect } from "../tracking/PadRenderer2D";
 import { TrackingHUD } from "../tracking/TrackingHUD";
 import { Effects2D } from "../tracking/Effects2D";
 import { RuneGatesHUD, type RuneGatesSessionSummary } from "./minigames/RuneGatesHUD";
-import { DEFAULT_MONSTER_TEAM } from "./MonsterTeams";
+import { DEFAULT_MONSTER_TEAM, type MonsterTeam } from "./MonsterTeams";
 
 type GameElements = {
   mount: HTMLElement;
@@ -13,6 +13,7 @@ type GameElements = {
   playerRunCount?: number;
   trainingMode?: boolean;
   spellDemoMode?: boolean;
+  monsterTeam?: MonsterTeam;
   playerLoadoutSummary?: {
     helmet: string;
     stick: string;
@@ -44,6 +45,7 @@ export class Game {
   private viewWidth = 0;
   private viewHeight = 0;
   private dpr = 1;
+  private padBounds: Rect = { x: 0, y: 0, width: 1, height: 1 };
   private readonly arenaBackdrop = new Image();
   private arenaBackdropReady = false;
 
@@ -71,12 +73,13 @@ export class Game {
       overlayRoot: this.overlay,
       inputLabel: "Mouse (DEV)"
     });
+    const monsterTeam = elements.monsterTeam ?? DEFAULT_MONSTER_TEAM;
     this.runeGates = new RuneGatesHUD({
       provider: this.provider,
       overlayRoot: this.overlay,
       getPadBounds: () => this.getPadBounds(),
       effects: this.effects,
-      monsterTeam: DEFAULT_MONSTER_TEAM,
+      monsterTeam,
       playerDisplayName: elements.playerDisplayName,
       playerRunCount: elements.playerRunCount,
       trainingMode: elements.trainingMode,
@@ -471,20 +474,22 @@ export class Game {
 
     this.canvas.width = Math.floor(this.viewWidth * this.dpr);
     this.canvas.height = Math.floor(this.viewHeight * this.dpr);
+    this.recomputePadBounds();
   }
 
-  private getPadBounds() {
+  private recomputePadBounds(): void {
     const desktopHudLayout = this.viewWidth > 900;
     if (!desktopHudLayout) {
       const topInset = Math.min(136, Math.max(104, this.viewHeight * 0.14));
       const innerHeight = Math.max(120, this.viewHeight - topInset);
       const innerPad = computePadBounds(this.viewWidth, innerHeight);
-      return {
+      this.padBounds = {
         x: innerPad.x,
         y: innerPad.y + topInset,
         width: innerPad.width,
         height: innerPad.height
       };
+      return;
     }
 
     // Keep the gameplay pad fully below the top HUD rail (tracking, jumbotron, profile/options).
@@ -499,12 +504,16 @@ export class Game {
     const innerHeight = Math.max(120, this.viewHeight - topInset - bottomInset);
     const innerPad = computePadBounds(innerWidth, innerHeight);
 
-    return {
+    this.padBounds = {
       x: innerPad.x + leftInset,
       y: innerPad.y + topInset,
       width: innerPad.width,
       height: innerPad.height
     };
+  }
+
+  private getPadBounds(): Rect {
+    return this.padBounds;
   }
 
   private getDesktopTopHudInset(hudMargin: number, padGap: number): number {

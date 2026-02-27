@@ -17,6 +17,7 @@ function cloneStore(store: ProfileStore): ProfileStore {
     profiles: store.profiles.map((profile) => ({
       ...profile,
       perks: [...profile.perks],
+      seenCutscenes: [...profile.seenCutscenes],
       unlockedCosmetics: [...profile.unlockedCosmetics],
       equippedCosmetics: { ...profile.equippedCosmetics },
       stats: { ...profile.stats }
@@ -67,6 +68,9 @@ function normalizeStore(raw: unknown): ProfileStore | null {
           ? Math.max(0, Math.floor(entry.perkPoints))
           : 0,
       perks: Array.isArray(entry.perks) ? entry.perks.filter((perk): perk is string => typeof perk === "string") : [],
+      seenCutscenes: Array.isArray(entry.seenCutscenes)
+        ? entry.seenCutscenes.filter((id): id is string => typeof id === "string")
+        : [],
       unlockedCosmetics,
       equippedCosmetics: {
         trail:
@@ -108,6 +112,10 @@ function normalizeStore(raw: unknown): ProfileStore | null {
         totalPerfects:
           typeof stats.totalPerfects === "number" && Number.isFinite(stats.totalPerfects)
             ? Math.max(0, Math.floor(stats.totalPerfects))
+            : 0,
+        matchWins:
+          typeof stats.matchWins === "number" && Number.isFinite(stats.matchWins)
+            ? Math.max(0, Math.floor(stats.matchWins))
             : 0
       },
       createdAtMs:
@@ -188,6 +196,7 @@ export class ProfileManager {
       id,
       updatedAtMs: Date.now(),
       perks: [...nextProfile.perks],
+      seenCutscenes: [...nextProfile.seenCutscenes],
       unlockedCosmetics: [...nextProfile.unlockedCosmetics],
       equippedCosmetics: { ...nextProfile.equippedCosmetics },
       stats: { ...nextProfile.stats }
