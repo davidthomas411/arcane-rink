@@ -46,6 +46,9 @@ export class Game {
   private viewHeight = 0;
   private dpr = 1;
   private padBounds: Rect = { x: 0, y: 0, width: 1, height: 1 };
+  private backdropCacheCanvas: HTMLCanvasElement | null = null;
+  private backdropCacheKey = "";
+  private backdropCacheDirty = true;
   private readonly arenaBackdrop = new Image();
   private arenaBackdropReady = false;
 
@@ -108,6 +111,7 @@ export class Game {
       this.arenaBackdropReady = false;
       this.arenaBackdrop.onload = () => {
         this.arenaBackdropReady = true;
+        this.invalidateBackdropCache();
       };
       this.arenaBackdrop.onerror = () => {
         tryLoad(index + 1);
@@ -137,6 +141,9 @@ export class Game {
     this.provider.destroy();
     this.trackingHud.destroy();
     this.runeGates.destroy();
+    this.backdropCacheCanvas = null;
+    this.backdropCacheKey = "";
+    this.backdropCacheDirty = true;
   }
 
   private readonly frame = (timeMs: number): void => {
@@ -198,6 +205,58 @@ export class Game {
     height: number,
     timeSec: number
   ): void {
+    const hasRinkReferenceBackdrop =
+      this.arenaBackdropReady &&
+      this.arenaBackdrop.naturalWidth > 0 &&
+      this.arenaBackdrop.naturalHeight > 0;
+
+    const cache = this.getBackdropCacheCanvas(width, height, hasRinkReferenceBackdrop);
+    if (cache) {
+      ctx.drawImage(cache, 0, 0, width, height);
+    } else {
+      this.renderStaticBackdrop(ctx, width, height, hasRinkReferenceBackdrop);
+    }
+
+    this.renderAnimatedBackdrop(ctx, width, height, timeSec, hasRinkReferenceBackdrop);
+  }
+
+  private invalidateBackdropCache(): void {
+    this.backdropCacheDirty = true;
+  }
+
+  private getBackdropCacheCanvas(
+    width: number,
+    height: number,
+    hasRinkReferenceBackdrop: boolean
+  ): HTMLCanvasElement | null {
+    const cacheKey = `${Math.round(width)}x${Math.round(height)}:${hasRinkReferenceBackdrop ? this.arenaBackdrop.src : "procedural"}`;
+    if (!this.backdropCacheDirty && this.backdropCacheCanvas && this.backdropCacheKey === cacheKey) {
+      return this.backdropCacheCanvas;
+    }
+
+    const canvas = this.backdropCacheCanvas ?? document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    const cacheCtx = canvas.getContext("2d");
+    if (!cacheCtx) {
+      return null;
+    }
+
+    cacheCtx.setTransform(1, 0, 0, 1, 0, 0);
+    cacheCtx.clearRect(0, 0, canvas.width, canvas.height);
+    this.renderStaticBackdrop(cacheCtx, width, height, hasRinkReferenceBackdrop);
+    this.backdropCacheCanvas = canvas;
+    this.backdropCacheKey = cacheKey;
+    this.backdropCacheDirty = false;
+    return canvas;
+  }
+
+  private renderStaticBackdrop(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    hasRinkReferenceBackdrop: boolean
+  ): void {
     const bg = ctx.createLinearGradient(0, 0, 0, height);
     bg.addColorStop(0, "#0f1113");
     bg.addColorStop(0.34, "#161617");
@@ -219,11 +278,6 @@ export class Game {
     horizonGlow.addColorStop(1, "rgba(177, 58, 26, 0)");
     ctx.fillStyle = horizonGlow;
     ctx.fillRect(0, 0, width, height);
-
-    const hasRinkReferenceBackdrop =
-      this.arenaBackdropReady &&
-      this.arenaBackdrop.naturalWidth > 0 &&
-      this.arenaBackdrop.naturalHeight > 0;
 
     if (hasRinkReferenceBackdrop) {
       const img = this.arenaBackdrop;
@@ -258,150 +312,173 @@ export class Game {
 
     if (!hasRinkReferenceBackdrop) {
       // Cathedral rink architecture silhouette (reference-inspired, kept subtle behind gameplay).
-    const naveTop = height * 0.1;
-    const naveBottom = height * 0.66;
-    const naveCenterX = width * 0.5;
-    const naveHalfWidth = width * 0.39;
+      const naveTop = height * 0.1;
+      const naveBottom = height * 0.66;
+      const naveCenterX = width * 0.5;
+      const naveHalfWidth = width * 0.39;
 
-    const vaultShade = ctx.createLinearGradient(0, naveTop, 0, naveBottom);
-    vaultShade.addColorStop(0, "rgba(14, 18, 34, 0.75)");
-    vaultShade.addColorStop(0.58, "rgba(9, 13, 25, 0.46)");
-    vaultShade.addColorStop(1, "rgba(5, 8, 14, 0)");
-    ctx.fillStyle = vaultShade;
-    ctx.fillRect(0, naveTop, width, naveBottom - naveTop);
+      const vaultShade = ctx.createLinearGradient(0, naveTop, 0, naveBottom);
+      vaultShade.addColorStop(0, "rgba(14, 18, 34, 0.75)");
+      vaultShade.addColorStop(0.58, "rgba(9, 13, 25, 0.46)");
+      vaultShade.addColorStop(1, "rgba(5, 8, 14, 0)");
+      ctx.fillStyle = vaultShade;
+      ctx.fillRect(0, naveTop, width, naveBottom - naveTop);
 
-    ctx.save();
-    ctx.strokeStyle = "rgba(106, 135, 182, 0.11)";
-    ctx.lineCap = "round";
-    for (let i = 0; i < 6; i += 1) {
-      const t = i / 5;
-      const spread = naveHalfWidth * (0.28 + t * 0.72);
-      const archTop = naveTop + 8 + i * 18;
-      const archBaseY = naveBottom - 18 + i * 2;
+      ctx.save();
+      ctx.strokeStyle = "rgba(106, 135, 182, 0.11)";
+      ctx.lineCap = "round";
+      for (let i = 0; i < 6; i += 1) {
+        const t = i / 5;
+        const spread = naveHalfWidth * (0.28 + t * 0.72);
+        const archTop = naveTop + 8 + i * 18;
+        const archBaseY = naveBottom - 18 + i * 2;
 
-      ctx.lineWidth = 1.5 + i * 0.18;
+        ctx.lineWidth = 1.5 + i * 0.18;
+        ctx.beginPath();
+        ctx.moveTo(naveCenterX - spread, archBaseY);
+        ctx.quadraticCurveTo(naveCenterX - spread * 0.55, archTop + 30, naveCenterX, archTop);
+        ctx.quadraticCurveTo(naveCenterX + spread * 0.55, archTop + 30, naveCenterX + spread, archBaseY);
+        ctx.stroke();
+
+        if (i < 5) {
+          ctx.strokeStyle = "rgba(80, 106, 150, 0.07)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(naveCenterX - spread * 0.86, archBaseY);
+          ctx.lineTo(naveCenterX - spread * 0.68, archTop + 54);
+          ctx.lineTo(naveCenterX - spread * 0.45, archTop + 32);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(naveCenterX + spread * 0.86, archBaseY);
+          ctx.lineTo(naveCenterX + spread * 0.68, archTop + 54);
+          ctx.lineTo(naveCenterX + spread * 0.45, archTop + 32);
+          ctx.stroke();
+          ctx.strokeStyle = "rgba(106, 135, 182, 0.11)";
+        }
+      }
+      ctx.restore();
+
+      // Stands / side walls
+      ctx.save();
+      const standGradL = ctx.createLinearGradient(0, height * 0.28, width * 0.3, height);
+      standGradL.addColorStop(0, "rgba(15, 15, 22, 0.36)");
+      standGradL.addColorStop(1, "rgba(6, 7, 10, 0.62)");
+      ctx.fillStyle = standGradL;
       ctx.beginPath();
-      ctx.moveTo(naveCenterX - spread, archBaseY);
-      ctx.quadraticCurveTo(naveCenterX - spread * 0.55, archTop + 30, naveCenterX, archTop);
-      ctx.quadraticCurveTo(naveCenterX + spread * 0.55, archTop + 30, naveCenterX + spread, archBaseY);
+      ctx.moveTo(0, height * 0.38);
+      ctx.lineTo(width * 0.2, height * 0.42);
+      ctx.lineTo(width * 0.33, height * 0.85);
+      ctx.lineTo(0, height);
+      ctx.closePath();
+      ctx.fill();
+
+      const standGradR = ctx.createLinearGradient(width, height * 0.28, width * 0.7, height);
+      standGradR.addColorStop(0, "rgba(15, 15, 22, 0.36)");
+      standGradR.addColorStop(1, "rgba(6, 7, 10, 0.62)");
+      ctx.fillStyle = standGradR;
+      ctx.beginPath();
+      ctx.moveTo(width, height * 0.38);
+      ctx.lineTo(width * 0.8, height * 0.42);
+      ctx.lineTo(width * 0.67, height * 0.85);
+      ctx.lineTo(width, height);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Torch sconces and warm glows to create the cold/warm contrast from the reference.
+      const torchRows = [0.3, 0.39, 0.49, 0.6];
+      for (let i = 0; i < torchRows.length; i += 1) {
+        const y = height * torchRows[i];
+        const xL = width * (0.12 + i * 0.015);
+        const xR = width - xL;
+        for (const x of [xL, xR]) {
+          const glow = ctx.createRadialGradient(x, y + 4, 2, x, y + 4, width * 0.08);
+          glow.addColorStop(0, "rgba(255, 202, 124, 0.22)");
+          glow.addColorStop(0.35, "rgba(255, 141, 84, 0.12)");
+          glow.addColorStop(1, "rgba(255, 141, 84, 0)");
+          ctx.fillStyle = glow;
+          ctx.fillRect(x - width * 0.08, y - width * 0.08, width * 0.16, width * 0.16);
+
+          ctx.save();
+          ctx.strokeStyle = "rgba(70, 60, 52, 0.45)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x - 7, y + 9);
+          ctx.lineTo(x + 7, y + 9);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(255, 155, 92, 0.85)";
+          ctx.beginPath();
+          ctx.moveTo(x, y - 5);
+          ctx.quadraticCurveTo(x + 4, y + 1, x, y + 8);
+          ctx.quadraticCurveTo(x - 4, y + 1, x, y - 5);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      // Subtle rink bowl / boards beneath the pad to anchor the scene.
+      const rinkTopY = height * 0.63;
+      const rinkBottomY = height * 0.95;
+      const rinkLeftTop = width * 0.23;
+      const rinkRightTop = width * 0.77;
+      const rinkLeftBottom = width * 0.08;
+      const rinkRightBottom = width * 0.92;
+
+      ctx.save();
+      const iceGlow = ctx.createLinearGradient(0, rinkTopY, 0, rinkBottomY);
+      iceGlow.addColorStop(0, "rgba(111, 143, 175, 0.035)");
+      iceGlow.addColorStop(0.45, "rgba(215, 198, 161, 0.075)");
+      iceGlow.addColorStop(1, "rgba(143, 126, 93, 0.04)");
+      ctx.fillStyle = iceGlow;
+      ctx.beginPath();
+      ctx.moveTo(rinkLeftTop, rinkTopY);
+      ctx.lineTo(rinkRightTop, rinkTopY);
+      ctx.lineTo(rinkRightBottom, rinkBottomY);
+      ctx.lineTo(rinkLeftBottom, rinkBottomY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(215, 198, 161, 0.13)";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(rinkLeftTop, rinkTopY);
+      ctx.lineTo(rinkRightTop, rinkTopY);
+      ctx.lineTo(rinkRightBottom, rinkBottomY);
+      ctx.lineTo(rinkLeftBottom, rinkBottomY);
+      ctx.closePath();
       ctx.stroke();
 
-      if (i < 5) {
-        ctx.strokeStyle = "rgba(80, 106, 150, 0.07)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(naveCenterX - spread * 0.86, archBaseY);
-        ctx.lineTo(naveCenterX - spread * 0.68, archTop + 54);
-        ctx.lineTo(naveCenterX - spread * 0.45, archTop + 32);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(naveCenterX + spread * 0.86, archBaseY);
-        ctx.lineTo(naveCenterX + spread * 0.68, archTop + 54);
-        ctx.lineTo(naveCenterX + spread * 0.45, archTop + 32);
-        ctx.stroke();
-        ctx.strokeStyle = "rgba(106, 135, 182, 0.11)";
-      }
-    }
-    ctx.restore();
-
-    // Stands / side walls
-    ctx.save();
-    const standGradL = ctx.createLinearGradient(0, height * 0.28, width * 0.3, height);
-    standGradL.addColorStop(0, "rgba(15, 15, 22, 0.36)");
-    standGradL.addColorStop(1, "rgba(6, 7, 10, 0.62)");
-    ctx.fillStyle = standGradL;
-    ctx.beginPath();
-    ctx.moveTo(0, height * 0.38);
-    ctx.lineTo(width * 0.2, height * 0.42);
-    ctx.lineTo(width * 0.33, height * 0.85);
-    ctx.lineTo(0, height);
-    ctx.closePath();
-    ctx.fill();
-
-    const standGradR = ctx.createLinearGradient(width, height * 0.28, width * 0.7, height);
-    standGradR.addColorStop(0, "rgba(15, 15, 22, 0.36)");
-    standGradR.addColorStop(1, "rgba(6, 7, 10, 0.62)");
-    ctx.fillStyle = standGradR;
-    ctx.beginPath();
-    ctx.moveTo(width, height * 0.38);
-    ctx.lineTo(width * 0.8, height * 0.42);
-    ctx.lineTo(width * 0.67, height * 0.85);
-    ctx.lineTo(width, height);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-
-    // Torch sconces and warm glows to create the cold/warm contrast from the reference.
-    const torchRows = [0.3, 0.39, 0.49, 0.6];
-    for (let i = 0; i < torchRows.length; i += 1) {
-      const y = height * torchRows[i];
-      const xL = width * (0.12 + i * 0.015);
-      const xR = width - xL;
-      for (const x of [xL, xR]) {
-        const glow = ctx.createRadialGradient(x, y + 4, 2, x, y + 4, width * 0.08);
-        glow.addColorStop(0, "rgba(255, 202, 124, 0.22)");
-        glow.addColorStop(0.35, "rgba(255, 141, 84, 0.12)");
-        glow.addColorStop(1, "rgba(255, 141, 84, 0)");
-        ctx.fillStyle = glow;
-        ctx.fillRect(x - width * 0.08, y - width * 0.08, width * 0.16, width * 0.16);
-
-        ctx.save();
-        ctx.strokeStyle = "rgba(70, 60, 52, 0.45)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(x - 7, y + 9);
-        ctx.lineTo(x + 7, y + 9);
-        ctx.stroke();
-        ctx.fillStyle = "rgba(255, 155, 92, 0.85)";
-        ctx.beginPath();
-        ctx.moveTo(x, y - 5);
-        ctx.quadraticCurveTo(x + 4, y + 1, x, y + 8);
-        ctx.quadraticCurveTo(x - 4, y + 1, x, y - 5);
-        ctx.fill();
-        ctx.restore();
-      }
+      ctx.strokeStyle = "rgba(255, 101, 92, 0.08)";
+      ctx.beginPath();
+      ctx.moveTo(width * 0.5, rinkTopY);
+      ctx.lineTo(width * 0.5, rinkBottomY);
+      ctx.stroke();
+      ctx.restore();
     }
 
-    // Subtle rink bowl / boards beneath the pad to anchor the scene.
-    const rinkTopY = height * 0.63;
-    const rinkBottomY = height * 0.95;
-    const rinkLeftTop = width * 0.23;
-    const rinkRightTop = width * 0.77;
-    const rinkLeftBottom = width * 0.08;
-    const rinkRightBottom = width * 0.92;
+    // Soft vignette
+    const vignette = ctx.createRadialGradient(
+      width * 0.5,
+      height * 0.52,
+      Math.min(width, height) * 0.15,
+      width * 0.5,
+      height * 0.5,
+      Math.max(width, height) * 0.72
+    );
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(0.62, "rgba(0,0,0,0.06)");
+    vignette.addColorStop(1, "rgba(0,0,0,0.42)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, width, height);
+  }
 
-    ctx.save();
-    const iceGlow = ctx.createLinearGradient(0, rinkTopY, 0, rinkBottomY);
-    iceGlow.addColorStop(0, "rgba(111, 143, 175, 0.035)");
-    iceGlow.addColorStop(0.45, "rgba(215, 198, 161, 0.075)");
-    iceGlow.addColorStop(1, "rgba(143, 126, 93, 0.04)");
-    ctx.fillStyle = iceGlow;
-    ctx.beginPath();
-    ctx.moveTo(rinkLeftTop, rinkTopY);
-    ctx.lineTo(rinkRightTop, rinkTopY);
-    ctx.lineTo(rinkRightBottom, rinkBottomY);
-    ctx.lineTo(rinkLeftBottom, rinkBottomY);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = "rgba(215, 198, 161, 0.13)";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(rinkLeftTop, rinkTopY);
-    ctx.lineTo(rinkRightTop, rinkTopY);
-    ctx.lineTo(rinkRightBottom, rinkBottomY);
-    ctx.lineTo(rinkLeftBottom, rinkBottomY);
-    ctx.closePath();
-    ctx.stroke();
-
-    ctx.strokeStyle = "rgba(255, 101, 92, 0.08)";
-    ctx.beginPath();
-    ctx.moveTo(width * 0.5, rinkTopY);
-    ctx.lineTo(width * 0.5, rinkBottomY);
-    ctx.stroke();
-    ctx.restore();
-    }
-
+  private renderAnimatedBackdrop(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    timeSec: number,
+    hasRinkReferenceBackdrop: boolean
+  ): void {
     const fogAlphaScale = hasRinkReferenceBackdrop ? 0.7 : 1;
     const particleAlphaScale = hasRinkReferenceBackdrop ? 0.78 : 1;
 
@@ -427,7 +504,7 @@ export class Game {
       ctx.restore();
     }
 
-    // Slow floating background particles
+    // Slow floating background particles.
     const particleCount = 68;
     for (let i = 0; i < particleCount; i += 1) {
       const baseX = ((Math.sin(i * 71.83) * 0.5 + 0.5) * 0.94 + 0.03) * width;
@@ -449,21 +526,6 @@ export class Game {
       ctx.fill();
       ctx.restore();
     }
-
-    // Soft vignette
-    const vignette = ctx.createRadialGradient(
-      width * 0.5,
-      height * 0.52,
-      Math.min(width, height) * 0.15,
-      width * 0.5,
-      height * 0.5,
-      Math.max(width, height) * 0.72
-    );
-    vignette.addColorStop(0, "rgba(0,0,0,0)");
-    vignette.addColorStop(0.62, "rgba(0,0,0,0.06)");
-    vignette.addColorStop(1, "rgba(0,0,0,0.42)");
-    ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, width, height);
   }
 
   private resize(): void {
@@ -474,6 +536,7 @@ export class Game {
 
     this.canvas.width = Math.floor(this.viewWidth * this.dpr);
     this.canvas.height = Math.floor(this.viewHeight * this.dpr);
+    this.invalidateBackdropCache();
     this.recomputePadBounds();
   }
 

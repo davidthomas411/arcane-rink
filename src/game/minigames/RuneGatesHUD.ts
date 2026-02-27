@@ -112,6 +112,7 @@ type FaceoffSpellState = {
   snapWindowRemainingSec: number;
   centerHoldSec: number;
   centerHoldGoalSec: number;
+  matchClockElapsedSec: number;
   runeSpinSeed: number;
 };
 
@@ -209,6 +210,7 @@ const FACEOFF_SPOTS: Point[] = [
   { x: 0.76, y: 0.33 },
   { x: 0.76, y: 0.67 }
 ];
+const ENABLE_BREACH_OVERLAY_EFFECTS = false;
 const HUD_REFRESH_INTERVAL_SEC = 1 / 20;
 const ANNOUNCER_SFX_POOL_SIZE = 2;
 const PUCK_HIT_SFX_POOL_SIZE = 4;
@@ -1106,33 +1108,7 @@ export class RuneGatesHUD {
     this.updateMatchClockAndPeriods();
     this.updateMomentumDifficultyCallout();
     if (this.timeRemaining <= 0) {
-      if (this.trainingMode) {
-        this.ended = true;
-        this.endReason = "timer";
-        this.target = null;
-        this.wasInsideTarget = false;
-        this.flashCombo("TRAINING COMPLETE", "great");
-        this.showStatus("Training complete • starting match", "offense", 1.05);
-        this.emitSessionEnd();
-        return;
-      }
-      this.ended = true;
-      this.endReason = "timer";
-      this.target = null;
-      this.wasInsideTarget = false;
-      const finalResult = this.getMatchResult();
-      this.finishOutroResult = finalResult;
-      const outroBase = finalResult === "win" ? 1.18 : finalResult === "tie" ? 1.06 : 0.98;
-      this.finishOutroPower = clamp(outroBase + this.bestCombo * 0.028 + this.perfects * 0.01, 0.95, 2.05);
-      this.finishOutroTimer = this.finishOutroDuration;
-      this.finishOutroBurstStage = 0;
-      const resultText = finalResult === "win" ? "Victory" : finalResult === "loss" ? "Defeat" : "Draw";
-      this.statusPersistent = false;
-      this.statusTransientTimer = 0;
-      this.statusEl.dataset.tone = finalResult === "win" ? "goal" : finalResult === "loss" ? "danger" : "neutral";
-      this.statusEl.textContent = `${resultText} • ${this.playerGoals}-${this.enemyGoals} vs ${this.monsterTeam.shortName} • Runes ${this.score.toLocaleString()}`;
-      this.statusEl.classList.remove("visible");
-      this.flashCombo("FINAL HORN", finalResult === "win" ? "great" : finalResult === "tie" ? "hit" : "late");
+      this.finishSessionForExpiredClock();
       this.updateEndedState(dt);
       this.updateHud();
       return;
@@ -2100,6 +2076,7 @@ export class RuneGatesHUD {
       snapWindowRemainingSec: snapWindow,
       centerHoldSec: 0,
       centerHoldGoalSec: centerHold,
+      matchClockElapsedSec: 0,
       runeSpinSeed
     };
 
@@ -2152,6 +2129,10 @@ export class RuneGatesHUD {
     const spell = this.faceoffSpell;
     if (!spell) {
       return;
+    }
+
+    if (!this.spellDemoMode) {
+      spell.matchClockElapsedSec += dt;
     }
 
     const pad = this.getPadBounds();
@@ -2251,6 +2232,41 @@ export class RuneGatesHUD {
     this.startFaceoffSpell("OPENING", favored);
   }
 
+  private finishSessionForExpiredClock(): void {
+    if (this.ended) {
+      return;
+    }
+
+    if (this.trainingMode) {
+      this.ended = true;
+      this.endReason = "timer";
+      this.target = null;
+      this.wasInsideTarget = false;
+      this.flashCombo("TRAINING COMPLETE", "great");
+      this.showStatus("Training complete • starting match", "offense", 1.05);
+      this.emitSessionEnd();
+      return;
+    }
+
+    this.ended = true;
+    this.endReason = "timer";
+    this.target = null;
+    this.wasInsideTarget = false;
+    const finalResult = this.getMatchResult();
+    this.finishOutroResult = finalResult;
+    const outroBase = finalResult === "win" ? 1.18 : finalResult === "tie" ? 1.06 : 0.98;
+    this.finishOutroPower = clamp(outroBase + this.bestCombo * 0.028 + this.perfects * 0.01, 0.95, 2.05);
+    this.finishOutroTimer = this.finishOutroDuration;
+    this.finishOutroBurstStage = 0;
+    const resultText = finalResult === "win" ? "Victory" : finalResult === "loss" ? "Defeat" : "Draw";
+    this.statusPersistent = false;
+    this.statusTransientTimer = 0;
+    this.statusEl.dataset.tone = finalResult === "win" ? "goal" : finalResult === "loss" ? "danger" : "neutral";
+    this.statusEl.textContent = `${resultText} • ${this.playerGoals}-${this.enemyGoals} vs ${this.monsterTeam.shortName} • Runes ${this.score.toLocaleString()}`;
+    this.statusEl.classList.remove("visible");
+    this.flashCombo("FINAL HORN", finalResult === "win" ? "great" : finalResult === "tie" ? "hit" : "late");
+  }
+
   private resolveFaceoffSpell(success: boolean): void {
     const spell = this.faceoffSpell;
     if (!spell || this.ended) {
@@ -2258,6 +2274,10 @@ export class RuneGatesHUD {
     }
 
     this.faceoffSpell = null;
+    if (!this.spellDemoMode && spell.matchClockElapsedSec > 0) {
+      this.timeRemaining = Math.max(0, this.timeRemaining - spell.matchClockElapsedSec);
+    }
+    const clockExpiredAfterResolution = !this.spellDemoMode && this.timeRemaining <= 0;
 
     if (spell.trigger === "BREACH_SAVE") {
       const pad = this.getPadBounds();
@@ -2280,6 +2300,9 @@ export class RuneGatesHUD {
         this.effects.spawnShockwave(cx, cy, 200, 1.45 * ritualPower);
         this.effects.spawnHitBurst(cx, cy, 196, 1.55 * ritualPower);
         this.effects.triggerShake(0.52 * ritualPower);
+        if (clockExpiredAfterResolution) {
+          this.finishSessionForExpiredClock();
+        }
       } else {
         this.flashCombo("RITUAL FAILED", "miss");
         this.showStatus("Rift consumes the seal", "danger", 1.05);
@@ -2323,6 +2346,9 @@ export class RuneGatesHUD {
     this.playGameSfx(winner === "PLAYER" ? "offense" : "defense");
     if (this.spellDemoMode) {
       this.faceoffDemoCooldown = 0.85;
+    }
+    if (clockExpiredAfterResolution) {
+      this.finishSessionForExpiredClock();
     }
   }
 
@@ -4114,6 +4140,13 @@ export class RuneGatesHUD {
   }
 
   private updateBreachVisualState(dt: number): void {
+    if (!ENABLE_BREACH_OVERLAY_EFFECTS) {
+      this.breachVisualPropagation = 0;
+      this.breachVisualStep = 0;
+      this.breachRumbleCooldown = 0;
+      return;
+    }
+
     const pressure = clamp(this.riftPressure, 0, 1);
     const fracture = clamp(1 - this.sealIntegrity, 0, 1);
     const surge = clamp(this.breachSurgeTimer / 2.6, 0, 1);
@@ -4556,6 +4589,26 @@ export class RuneGatesHUD {
   }
 
   private renderThreatEnvironment(ctx: CanvasRenderingContext2D, padRect: Rect, timeSec: number): void {
+    const finishOutroProgress =
+      this.endReason === "timer" && this.finishOutroTimer > 0
+        ? clamp(1 - this.finishOutroTimer / this.finishOutroDuration, 0, 1)
+        : 0;
+    if (!ENABLE_BREACH_OVERLAY_EFFECTS) {
+      if (finishOutroProgress <= 0) {
+        return;
+      }
+
+      const minDim = Math.min(padRect.width, padRect.height);
+      const padRadius = minDim * 0.035;
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(padRect.x, padRect.y, padRect.width, padRect.height, padRadius);
+      ctx.clip();
+      this.renderFinishOutro(ctx, padRect, timeSec, finishOutroProgress);
+      ctx.restore();
+      return;
+    }
+
     const pressure = clamp(this.riftPressure, 0, 1);
     const fracture = clamp(1 - this.sealIntegrity, 0, 1);
     const breachPulse = clamp(this.breachSurgeTimer / 2.6, 0, 1);
@@ -4591,10 +4644,6 @@ export class RuneGatesHUD {
     const breachOutroProgress =
       this.endReason === "breach" && this.breachOutroTimer > 0
         ? clamp(1 - this.breachOutroTimer / this.breachOutroDuration, 0, 1)
-        : 0;
-    const finishOutroProgress =
-      this.endReason === "timer" && this.finishOutroTimer > 0
-        ? clamp(1 - this.finishOutroTimer / this.finishOutroDuration, 0, 1)
         : 0;
     if (finishOutroProgress > 0) {
       this.renderFinishOutro(ctx, padRect, timeSec, finishOutroProgress);
