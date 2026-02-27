@@ -1,4 +1,12 @@
-import { DEFAULT_PROFILE_STORE, createProfile, type ClassId, type Profile, type ProfileStore } from "../models/Profile";
+import {
+  DEFAULT_EQUIPPED_COSMETICS,
+  DEFAULT_PROFILE_STORE,
+  STARTER_COSMETICS,
+  createProfile,
+  type ClassId,
+  type Profile,
+  type ProfileStore
+} from "../models/Profile";
 
 const STORAGE_KEY = "arcane-rink/profiles.v1";
 
@@ -10,6 +18,7 @@ function cloneStore(store: ProfileStore): ProfileStore {
       ...profile,
       perks: [...profile.perks],
       unlockedCosmetics: [...profile.unlockedCosmetics],
+      equippedCosmetics: { ...profile.equippedCosmetics },
       stats: { ...profile.stats }
     }))
   };
@@ -32,6 +41,15 @@ function normalizeStore(raw: unknown): ProfileStore | null {
     }
 
     const stats = isObject(entry.stats) ? entry.stats : {};
+    const rawUnlocked = Array.isArray(entry.unlockedCosmetics)
+      ? entry.unlockedCosmetics.filter((item): item is Profile["unlockedCosmetics"][number] => typeof item === "string")
+      : [];
+    const unlockedSet = new Set<Profile["unlockedCosmetics"][number]>(rawUnlocked);
+    for (const starter of STARTER_COSMETICS) {
+      unlockedSet.add(starter);
+    }
+    const equippedRaw = isObject(entry.equippedCosmetics) ? entry.equippedCosmetics : {};
+    const unlockedCosmetics = [...unlockedSet];
     const profile: Profile = {
       id: typeof entry.id === "string" ? entry.id : `profile_${Math.random().toString(36).slice(2, 8)}`,
       displayName: typeof entry.displayName === "string" ? entry.displayName : "Rookie",
@@ -49,9 +67,30 @@ function normalizeStore(raw: unknown): ProfileStore | null {
           ? Math.max(0, Math.floor(entry.perkPoints))
           : 0,
       perks: Array.isArray(entry.perks) ? entry.perks.filter((perk): perk is string => typeof perk === "string") : [],
-      unlockedCosmetics: Array.isArray(entry.unlockedCosmetics)
-        ? entry.unlockedCosmetics.filter((item): item is Profile["unlockedCosmetics"][number] => typeof item === "string")
-        : [],
+      unlockedCosmetics,
+      equippedCosmetics: {
+        trail:
+          typeof equippedRaw.trail === "string" && unlockedSet.has(equippedRaw.trail as Profile["unlockedCosmetics"][number])
+            ? (equippedRaw.trail as Profile["equippedCosmetics"]["trail"])
+            : DEFAULT_EQUIPPED_COSMETICS.trail,
+        targetSkin:
+          typeof equippedRaw.targetSkin === "string" &&
+          unlockedSet.has(equippedRaw.targetSkin as Profile["unlockedCosmetics"][number])
+            ? (equippedRaw.targetSkin as Profile["equippedCosmetics"]["targetSkin"])
+            : DEFAULT_EQUIPPED_COSMETICS.targetSkin,
+        helmet:
+          typeof equippedRaw.helmet === "string" && unlockedSet.has(equippedRaw.helmet as Profile["unlockedCosmetics"][number])
+            ? (equippedRaw.helmet as Profile["equippedCosmetics"]["helmet"])
+            : DEFAULT_EQUIPPED_COSMETICS.helmet,
+        stick:
+          typeof equippedRaw.stick === "string" && unlockedSet.has(equippedRaw.stick as Profile["unlockedCosmetics"][number])
+            ? (equippedRaw.stick as Profile["equippedCosmetics"]["stick"])
+            : DEFAULT_EQUIPPED_COSMETICS.stick,
+        gloves:
+          typeof equippedRaw.gloves === "string" && unlockedSet.has(equippedRaw.gloves as Profile["unlockedCosmetics"][number])
+            ? (equippedRaw.gloves as Profile["equippedCosmetics"]["gloves"])
+            : DEFAULT_EQUIPPED_COSMETICS.gloves
+      },
       stats: {
         runs: typeof stats.runs === "number" && Number.isFinite(stats.runs) ? Math.max(0, Math.floor(stats.runs)) : 0,
         bestScore:
@@ -150,6 +189,7 @@ export class ProfileManager {
       updatedAtMs: Date.now(),
       perks: [...nextProfile.perks],
       unlockedCosmetics: [...nextProfile.unlockedCosmetics],
+      equippedCosmetics: { ...nextProfile.equippedCosmetics },
       stats: { ...nextProfile.stats }
     };
 
@@ -182,4 +222,3 @@ export class ProfileManager {
     this.storage.setItem(STORAGE_KEY, JSON.stringify(this.store));
   }
 }
-

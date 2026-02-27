@@ -9,6 +9,15 @@ type GameElements = {
   mount: HTMLElement;
   canvas: HTMLCanvasElement;
   overlay: HTMLElement;
+  playerDisplayName?: string;
+  playerRunCount?: number;
+  trainingMode?: boolean;
+  spellDemoMode?: boolean;
+  playerLoadoutSummary?: {
+    helmet: string;
+    stick: string;
+    gloves: string;
+  };
   onRunComplete?: (summary: RuneGatesSessionSummary) => void;
 };
 
@@ -35,8 +44,8 @@ export class Game {
   private viewWidth = 0;
   private viewHeight = 0;
   private dpr = 1;
-  private readonly rinkStyleBackdrop = new Image();
-  private rinkStyleBackdropReady = false;
+  private readonly arenaBackdrop = new Image();
+  private arenaBackdropReady = false;
 
   private readonly onResizeBound = (): void => {
     this.resize();
@@ -53,11 +62,8 @@ export class Game {
     }
     this.ctx = ctx;
 
-    this.rinkStyleBackdrop.decoding = "async";
-    this.rinkStyleBackdrop.src = new URL("../../tmp/rink-style.png", import.meta.url).href;
-    this.rinkStyleBackdrop.addEventListener("load", () => {
-      this.rinkStyleBackdropReady = true;
-    });
+    this.arenaBackdrop.decoding = "async";
+    this.loadPreferredArenaBackdrop();
 
     this.provider = new MousePuckProvider(this.canvas, () => this.getPadBounds());
     this.trackingHud = new TrackingHUD({
@@ -71,11 +77,42 @@ export class Game {
       getPadBounds: () => this.getPadBounds(),
       effects: this.effects,
       monsterTeam: DEFAULT_MONSTER_TEAM,
+      playerDisplayName: elements.playerDisplayName,
+      playerRunCount: elements.playerRunCount,
+      trainingMode: elements.trainingMode,
+      spellDemoMode: elements.spellDemoMode,
+      playerLoadoutSummary: elements.playerLoadoutSummary,
       onSessionEnd: elements.onRunComplete
     });
 
     window.addEventListener("resize", this.onResizeBound);
     this.resize();
+  }
+
+  private loadPreferredArenaBackdrop(): void {
+    const geminiA = new URL("../../tmp/Gemini_Generated_Image_tov9g9tov9g9tov9.png", import.meta.url).href;
+    const geminiB = new URL("../../tmp/Gemini_Generated_Image_njabtmnjabtmnjab.png", import.meta.url).href;
+    const rinkFallback = new URL("../../tmp/rink-style.png", import.meta.url).href;
+    const first = Math.random() < 0.5 ? geminiA : geminiB;
+    const second = first === geminiA ? geminiB : geminiA;
+    const candidates = [first, second, rinkFallback];
+
+    const tryLoad = (index: number): void => {
+      if (index >= candidates.length) {
+        return;
+      }
+      const url = candidates[index]!;
+      this.arenaBackdropReady = false;
+      this.arenaBackdrop.onload = () => {
+        this.arenaBackdropReady = true;
+      };
+      this.arenaBackdrop.onerror = () => {
+        tryLoad(index + 1);
+      };
+      this.arenaBackdrop.src = url;
+    };
+
+    tryLoad(0);
   }
 
   start(): void {
@@ -181,12 +218,12 @@ export class Game {
     ctx.fillRect(0, 0, width, height);
 
     const hasRinkReferenceBackdrop =
-      this.rinkStyleBackdropReady &&
-      this.rinkStyleBackdrop.naturalWidth > 0 &&
-      this.rinkStyleBackdrop.naturalHeight > 0;
+      this.arenaBackdropReady &&
+      this.arenaBackdrop.naturalWidth > 0 &&
+      this.arenaBackdrop.naturalHeight > 0;
 
     if (hasRinkReferenceBackdrop) {
-      const img = this.rinkStyleBackdrop;
+      const img = this.arenaBackdrop;
       const scale = Math.max(width / img.naturalWidth, height / img.naturalHeight);
       const drawW = img.naturalWidth * scale;
       const drawH = img.naturalHeight * scale;

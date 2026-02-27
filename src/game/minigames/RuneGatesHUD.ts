@@ -1,7 +1,8 @@
 import type { PuckProvider } from "../../providers/PuckProvider";
-import { padToPixel, type Rect } from "../../tracking/PadRenderer2D";
+import { padToPixel, type Point, type Rect } from "../../tracking/PadRenderer2D";
 import { Effects2D } from "../../tracking/Effects2D";
 import type { MonsterTeam } from "../MonsterTeams";
+import { BREACH_UNLOCK_RUNS, getThreatProgressionState, type ThreatProgressionState } from "../ThreatProgression";
 import {
   createArcaneScoreboard,
   setArcaneScoreboardScore,
@@ -9,6 +10,23 @@ import {
 } from "../../ui/ArcaneScoreboard";
 
 type RuneStyle = "ARCANE" | "FROST" | "FEL";
+type HudPortraitId = "PLAYER_A" | "PLAYER_K" | "GOBLIN" | null;
+
+type SidePortraitSlotRefs = {
+  root: HTMLDivElement;
+  imgEl: HTMLImageElement;
+  fallbackEl: HTMLSpanElement;
+  nameEl: HTMLSpanElement;
+  sideEl: HTMLSpanElement;
+  stateEl: HTMLSpanElement;
+  gearEl: HTMLSpanElement;
+};
+
+type PlayerLoadoutSummary = {
+  helmet: string;
+  stick: string;
+  gloves: string;
+};
 
 type RingTarget = {
   x: number;
@@ -32,6 +50,8 @@ type HitGrade = "PERFECT" | "GREAT" | "HIT";
 type ThreatPhase = "STABLE" | "CRACKING" | "BREACH";
 type MatchResult = "win" | "loss" | "tie";
 type Possession = "PLAYER" | "ENEMY";
+type FaceoffSpellStage = "TRACE" | "SNAP";
+type FaceoffSpellTrigger = "OPENING" | "PERIOD" | "GOAL_RESET";
 type GameSfxKey =
   | "offense"
   | "defense"
@@ -48,8 +68,62 @@ type PeriodScore = {
   enemyGoals: number;
 };
 
+type DifficultyPace = "OPENING" | "PRESSURE" | "FINAL_PUSH";
+
+type DifficultySnapshot = {
+  pace: DifficultyPace;
+  paceLabel: string;
+  paceShort: string;
+  baseIntensity: number;
+  openingGrace: number;
+  finalPush: number;
+  playerMercy: number;
+  enemySurge: number;
+  gateChaosBonus: number;
+  gateRadiusBias: number;
+  gateLifetimeBias: number;
+  driftBias: number;
+  enemyAttackScale: number;
+  tensionScale: number;
+  playerShotChanceBias: number;
+  enemyShotChanceBias: number;
+  playerThresholdAssist: number;
+  enemyThresholdPressure: number;
+  missPenaltyScale: number;
+};
+
+type FaceoffSpellState = {
+  trigger: FaceoffSpellTrigger;
+  favoredPossession: Possession;
+  stage: FaceoffSpellStage;
+  nodes: Point[];
+  currentNodeIndex: number;
+  traceTolerancePx: number;
+  snapTolerancePx: number;
+  totalDurationSec: number;
+  timeRemainingSec: number;
+  snapCueDelaySec: number;
+  snapWindowRemainingSec: number;
+  centerHoldSec: number;
+  centerHoldGoalSec: number;
+  runeSpinSeed: number;
+};
+
+const PLAYER_A_PORTRAIT_URL = new URL("../../../tmp/A.png", import.meta.url).href;
+const PLAYER_K_PORTRAIT_URL = new URL("../../../tmp/k.png", import.meta.url).href;
+const GOBLIN_PORTRAIT_URL = new URL("../../../tmp/G.png", import.meta.url).href;
+const BGM_TRACK_MODULES = import.meta.glob("../../../tmp/audio/bgm/*.{mp3,ogg,wav,m4a}", {
+  eager: true,
+  import: "default"
+}) as Record<string, string>;
+const BGM_TRACK_URLS = Object.entries(BGM_TRACK_MODULES)
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([, url]) => url)
+  .filter((url): url is string => typeof url === "string" && url.length > 0);
+
 export type RuneGatesSessionSummary = {
   modeId: "RUNE_GATES_HUD";
+  trainingMode: boolean;
   endReason: "timer" | "breach";
   durationSec: number;
   elapsedSec: number;
@@ -98,6 +172,48 @@ function styleHue(style: RuneStyle): number {
   }
 }
 
+function normalizePortraitInitials(name: string | null | undefined, fallback: string): string {
+  const cleaned = (name ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]+/g, " ")
+    .trim();
+  if (!cleaned) {
+    return fallback;
+  }
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.slice(0, 2);
+  }
+  return cleaned.slice(0, 2);
+}
+
+function resolvePlayerPortraitId(displayName: string | null | undefined): HudPortraitId {
+  const value = (displayName ?? "").trim().toUpperCase();
+  if (!value) {
+    return null;
+  }
+  if (value === "AT" || value.startsWith("AT ") || value.startsWith("A")) {
+    return "PLAYER_A";
+  }
+  if (value === "KT" || value.startsWith("KT ") || value.startsWith("K")) {
+    return "PLAYER_K";
+  }
+  return null;
+}
+
+function portraitUrlForId(id: HudPortraitId): string | null {
+  switch (id) {
+    case "PLAYER_A":
+      return PLAYER_A_PORTRAIT_URL;
+    case "PLAYER_K":
+      return PLAYER_K_PORTRAIT_URL;
+    case "GOBLIN":
+      return GOBLIN_PORTRAIT_URL;
+    default:
+      return null;
+  }
+}
+
 export class RuneGatesHUD {
   private readonly provider: PuckProvider;
   private readonly overlayRoot: HTMLElement;
@@ -127,8 +243,19 @@ export class RuneGatesHUD {
   private readonly scoreLabelEl: HTMLSpanElement;
   private readonly comboFlashEl: HTMLDivElement;
   private readonly statusEl: HTMLDivElement;
+  private readonly countdownEl: HTMLDivElement;
+  private readonly playerDisplayName: string;
+  private readonly playerLoadoutSummary: PlayerLoadoutSummary | null;
+  private readonly trainingMode: boolean;
+  private readonly spellDemoMode: boolean;
+  private readonly playerRunCount: number;
+  private readonly threatProgression: ThreatProgressionState;
+  private readonly homePortraitSlot: SidePortraitSlotRefs;
+  private readonly guestPortraitSlot: SidePortraitSlotRefs;
+  private lastPortraitLayoutKey = "";
 
   private target: RingTarget | null = null;
+  private faceoffSpell: FaceoffSpellState | null = null;
   private nextTargetId = 1;
   private wasInsideTarget = false;
   private comboFlash: ComboFlash | null = null;
@@ -165,6 +292,13 @@ export class RuneGatesHUD {
   ];
   private introAudio: HTMLAudioElement | null = null;
   private lastIntroClipIndex = -1;
+  private bgmAudio: HTMLAudioElement | null = null;
+  private lastBgmTrackIndex = -1;
+  private bgmDuckUntilMs = 0;
+  private bgmCurrentGain = 0;
+  private readonly bgmBaseVolume = 0.22;
+  private readonly bgmDuckVolume = 0.1;
+  private readonly bgmTrackUrls = BGM_TRACK_URLS;
   private readonly gameSfxClips: Record<GameSfxKey, string[]> = {
     offense: [new URL("../../../tmp/audio/game clips - simple/Offence.mp3", import.meta.url).href],
     defense: [new URL("../../../tmp/audio/game clips - simple/Deefence.mp3", import.meta.url).href],
@@ -196,6 +330,10 @@ export class RuneGatesHUD {
   };
   private readonly gameSfxLastPlayedAt = new Map<GameSfxKey, number>();
   private readonly gameSfxLastClipIndex = new Map<GameSfxKey, number>();
+  private preStartCountdownActive = false;
+  private preStartCountdownDurationSec = 3.2;
+  private preStartCountdownRemainingSec = 0;
+  private preStartCountdownSyncedToIntro = false;
 
   private sessionDuration = 60;
   private timeRemaining = 60;
@@ -238,6 +376,10 @@ export class RuneGatesHUD {
   private finishOutroResult: MatchResult = "tie";
   private statusTransientTimer = 0;
   private statusPersistent = false;
+  private momentumDifficultyBand: -1 | 0 | 1 = 0;
+  private momentumDifficultyCooldown = 0;
+  private faceoffDemoCooldown = 0;
+  private faceoffDemoRounds = 0;
 
   private readonly onKeyDownBound = (event: KeyboardEvent): void => {
     if (
@@ -258,6 +400,11 @@ export class RuneGatesHUD {
     getPadBounds: () => Rect;
     effects: Effects2D;
     monsterTeam: MonsterTeam;
+    playerDisplayName?: string;
+    playerLoadoutSummary?: PlayerLoadoutSummary;
+    trainingMode?: boolean;
+    spellDemoMode?: boolean;
+    playerRunCount?: number;
     onSessionEnd?: (summary: RuneGatesSessionSummary) => void;
   }) {
     this.provider = args.provider;
@@ -266,6 +413,12 @@ export class RuneGatesHUD {
     this.effects = args.effects;
     this.monsterTeam = args.monsterTeam;
     this.onSessionEnd = args.onSessionEnd;
+    this.playerDisplayName = (args.playerDisplayName ?? "AT").trim() || "AT";
+    this.playerLoadoutSummary = args.playerLoadoutSummary ?? null;
+    this.trainingMode = args.trainingMode === true;
+    this.spellDemoMode = args.spellDemoMode === true;
+    this.playerRunCount = Math.max(0, Math.floor(args.playerRunCount ?? 0));
+    this.threatProgression = getThreatProgressionState(this.playerRunCount);
 
     const scoreboard = createArcaneScoreboard("hud");
     this.scoreboardRefs = scoreboard;
@@ -292,26 +445,210 @@ export class RuneGatesHUD {
     this.enemyRailEl.textContent = this.monsterTeam.title;
     this.guestLabelEl.textContent = this.monsterTeam.shortName;
 
+    this.homePortraitSlot = this.createSidePortraitSlot("home");
+    this.guestPortraitSlot = this.createSidePortraitSlot("guest");
+    this.configureSidePortraitSlot(
+      this.homePortraitSlot,
+      resolvePlayerPortraitId(this.playerDisplayName),
+      this.playerDisplayName,
+      "Home",
+      this.playerLoadoutSummary
+        ? `${this.playerLoadoutSummary.helmet} • ${this.playerLoadoutSummary.stick}`
+        : "Starter gear"
+    );
+    this.configureSidePortraitSlot(this.guestPortraitSlot, "GOBLIN", this.monsterTeam.shortName, "Away", "Bone mask • Hook stick");
+
     this.comboFlashEl = document.createElement("div");
     this.comboFlashEl.className = "combo-flash";
 
     this.statusEl = document.createElement("div");
     this.statusEl.className = "session-status";
 
-    this.overlayRoot.append(this.panelEl, this.comboFlashEl, this.statusEl);
+    this.countdownEl = document.createElement("div");
+    this.countdownEl.className = "pre-run-countdown";
+
+    this.overlayRoot.append(
+      this.panelEl,
+      this.homePortraitSlot.root,
+      this.guestPortraitSlot.root,
+      this.countdownEl,
+      this.comboFlashEl,
+      this.statusEl
+    );
     window.addEventListener("keydown", this.onKeyDownBound);
 
     this.reset();
   }
 
+  private createSidePortraitSlot(side: "home" | "guest"): SidePortraitSlotRefs {
+    const root = document.createElement("div");
+    root.className = `side-skater side-skater--${side}`;
+    root.innerHTML = `
+      <div class="side-skater__frame">
+        <div class="side-skater__art">
+          <img class="side-skater__image" alt="" />
+          <span class="side-skater__fallback"></span>
+        </div>
+        <div class="side-skater__plate">
+          <span class="side-skater__side">${side === "home" ? "HOME" : "AWAY"}</span>
+          <strong class="side-skater__name">${side === "home" ? "PLAYER" : "GUEST"}</strong>
+          <span class="side-skater__gear">Starter gear</span>
+          <span class="side-skater__state">OFFENSE</span>
+        </div>
+      </div>
+    `;
+
+    const imgEl = root.querySelector<HTMLImageElement>(".side-skater__image");
+    const fallbackEl = root.querySelector<HTMLSpanElement>(".side-skater__fallback");
+    const nameEl = root.querySelector<HTMLSpanElement>(".side-skater__name");
+    const sideEl = root.querySelector<HTMLSpanElement>(".side-skater__side");
+    const gearEl = root.querySelector<HTMLSpanElement>(".side-skater__gear");
+    const stateEl = root.querySelector<HTMLSpanElement>(".side-skater__state");
+    if (!imgEl || !fallbackEl || !nameEl || !sideEl || !gearEl || !stateEl) {
+      throw new Error("RuneGatesHUD side portrait slot failed to initialize");
+    }
+
+    return { root, imgEl, fallbackEl, nameEl, sideEl, stateEl, gearEl };
+  }
+
+  private configureSidePortraitSlot(
+    slot: SidePortraitSlotRefs,
+    portraitId: HudPortraitId,
+    displayName: string,
+    sideLabel: string,
+    gearSummary: string
+  ): void {
+    const portraitUrl = portraitUrlForId(portraitId);
+    const initials = normalizePortraitInitials(displayName, sideLabel === "Home" ? "P1" : "EN");
+    slot.root.dataset.portraitId = portraitId ?? "NONE";
+
+    slot.nameEl.textContent = displayName;
+    slot.sideEl.textContent = sideLabel.toUpperCase();
+    slot.gearEl.textContent = gearSummary;
+    slot.fallbackEl.textContent = initials;
+
+    if (portraitUrl) {
+      slot.imgEl.src = portraitUrl;
+      slot.imgEl.hidden = false;
+      slot.root.classList.add("is-loaded");
+      slot.root.classList.remove("is-empty");
+    } else {
+      slot.imgEl.removeAttribute("src");
+      slot.imgEl.hidden = true;
+      slot.root.classList.remove("is-loaded");
+      slot.root.classList.add("is-empty");
+    }
+  }
+
+  private updateSidePortraitHud(): void {
+    this.updateSidePortraitLayout();
+
+    const playerOnOffense = this.possession === "PLAYER";
+    this.homePortraitSlot.root.dataset.possession = playerOnOffense ? "offense" : "defense";
+    this.guestPortraitSlot.root.dataset.possession = playerOnOffense ? "defense" : "offense";
+    this.homePortraitSlot.root.classList.toggle("is-offense", playerOnOffense);
+    this.homePortraitSlot.root.classList.toggle("is-defense", !playerOnOffense);
+    this.homePortraitSlot.stateEl.textContent = playerOnOffense ? "PUCK" : "DEFEND";
+
+    this.guestPortraitSlot.root.classList.toggle("is-offense", !playerOnOffense);
+    this.guestPortraitSlot.root.classList.toggle("is-defense", playerOnOffense);
+    this.guestPortraitSlot.stateEl.textContent = playerOnOffense ? "DEFEND" : "PUCK";
+
+    if (this.ended) {
+      this.homePortraitSlot.root.classList.toggle("is-win", this.playerGoals > this.enemyGoals);
+      this.guestPortraitSlot.root.classList.toggle("is-win", this.enemyGoals > this.playerGoals);
+    } else {
+      this.homePortraitSlot.root.classList.remove("is-win");
+      this.guestPortraitSlot.root.classList.remove("is-win");
+    }
+  }
+
+  private updateSidePortraitLayout(): void {
+    const overlayWidth = this.overlayRoot.clientWidth;
+    const overlayHeight = this.overlayRoot.clientHeight;
+    const pad = this.getPadBounds();
+
+    const outerMargin = 14;
+    const gap = clamp(Math.round(Math.min(22, pad.width * 0.03)), 12, 22);
+    const panelHeight = clamp(pad.height * 0.72, 220, Math.min(560, overlayHeight - outerMargin * 2));
+    const targetPanelWidth = clamp(panelHeight * 0.62, 120, 300);
+    const centerY = pad.y + pad.height * 0.54;
+    const top = clamp(centerY - panelHeight * 0.5, outerMargin + 12, overlayHeight - panelHeight - outerMargin);
+
+    const leftAvailable = Math.max(0, pad.x - gap - outerMargin);
+    const rightAvailable = Math.max(0, overlayWidth - (pad.x + pad.width) - gap - outerMargin);
+    const minShowWidth = 108;
+
+    const leftWidth = Math.min(targetPanelWidth, leftAvailable);
+    const rightWidth = Math.min(targetPanelWidth, rightAvailable);
+    const showLeft = leftWidth >= minShowWidth;
+    const showRight = rightWidth >= minShowWidth;
+
+    const leftX = Math.round(pad.x - gap - leftWidth);
+    const rightX = Math.round(pad.x + pad.width + gap);
+
+    const layoutKey = [
+      overlayWidth,
+      overlayHeight,
+      Math.round(pad.x),
+      Math.round(pad.y),
+      Math.round(pad.width),
+      Math.round(pad.height),
+      Math.round(top),
+      Math.round(panelHeight),
+      Math.round(leftWidth),
+      Math.round(rightWidth),
+      showLeft ? 1 : 0,
+      showRight ? 1 : 0
+    ].join("|");
+
+    if (layoutKey === this.lastPortraitLayoutKey) {
+      return;
+    }
+    this.lastPortraitLayoutKey = layoutKey;
+
+    this.homePortraitSlot.root.classList.toggle("is-hidden", !showLeft);
+    this.guestPortraitSlot.root.classList.toggle("is-hidden", !showRight);
+
+    if (showLeft) {
+      this.homePortraitSlot.root.style.left = `${leftX}px`;
+      this.homePortraitSlot.root.style.top = `${Math.round(top)}px`;
+      this.homePortraitSlot.root.style.width = `${Math.round(leftWidth)}px`;
+      this.homePortraitSlot.root.style.height = `${Math.round(panelHeight)}px`;
+    }
+    if (showRight) {
+      this.guestPortraitSlot.root.style.left = `${rightX}px`;
+      this.guestPortraitSlot.root.style.top = `${Math.round(top)}px`;
+      this.guestPortraitSlot.root.style.width = `${Math.round(rightWidth)}px`;
+      this.guestPortraitSlot.root.style.height = `${Math.round(panelHeight)}px`;
+    }
+  }
+
   reset(): void {
-    this.playRandomIntroClip();
+    this.stopBackgroundMusic();
+    if (this.introAudio) {
+      this.introAudio.pause();
+      this.introAudio.src = "";
+      this.introAudio = null;
+    }
+    if (this.spellDemoMode) {
+      this.preStartCountdownActive = false;
+      this.preStartCountdownDurationSec = 0;
+      this.preStartCountdownRemainingSec = 0;
+      this.preStartCountdownSyncedToIntro = false;
+    } else {
+      this.startPreStartCountdown(3.2);
+      this.playRandomIntroClip();
+    }
     this.gameSfxLastPlayedAt.clear();
     this.gameSfxLastClipIndex.clear();
     this.target = null;
+    this.faceoffSpell = null;
+    this.faceoffDemoCooldown = this.spellDemoMode ? 0.35 : 0;
+    this.faceoffDemoRounds = 0;
     this.wasInsideTarget = false;
     this.comboFlash = null;
-    this.sessionDuration = this.periodCount * this.periodDurationSec;
+    this.sessionDuration = this.spellDemoMode ? 9999 : this.trainingMode ? 18 : this.periodCount * this.periodDurationSec;
     this.timeRemaining = this.sessionDuration;
     this.spawnDelay = 0.25;
     this.score = 0;
@@ -333,7 +670,7 @@ export class RuneGatesHUD {
     this.hasEmittedEnd = false;
     this.endReason = null;
     this.sealIntegrity = 1;
-    this.riftPressure = 0.08;
+    this.riftPressure = this.trainingMode || this.spellDemoMode ? 0.02 : this.isRookieWardActive() ? 0.05 : 0.08;
     this.breachSurgeTimer = 0;
     this.breachCount = 0;
     this.lowestIntegrity = 1;
@@ -346,14 +683,21 @@ export class RuneGatesHUD {
     this.finishOutroResult = "tie";
     this.statusTransientTimer = 0;
     this.statusPersistent = false;
+    this.momentumDifficultyBand = 0;
+    this.momentumDifficultyCooldown = 0;
     this.statusEl.textContent = "";
     delete this.statusEl.dataset.tone;
     this.statusEl.classList.remove("visible");
+    this.panelEl.dataset.training = this.trainingMode ? "true" : "false";
+    this.panelEl.dataset.spellDemo = this.spellDemoMode ? "true" : "false";
+    this.updateCountdownDom();
     this.updateHud();
   }
 
   update(dt: number): void {
+    this.updateBackgroundMusic(dt);
     this.possessionLockTimer = Math.max(0, this.possessionLockTimer - dt);
+    this.momentumDifficultyCooldown = Math.max(0, this.momentumDifficultyCooldown - dt);
     this.updateTransientStatus(dt);
 
     if (this.comboFlash) {
@@ -364,13 +708,33 @@ export class RuneGatesHUD {
     }
     this.updateComboFlashDom();
 
+    if (this.preStartCountdownActive) {
+      this.updatePreStartCountdown(dt);
+      this.updateHud();
+      return;
+    }
+
+    if (this.faceoffSpell) {
+      this.updateFaceoffSpell(dt);
+      this.updateHud();
+      return;
+    }
+
+    if (this.spellDemoMode) {
+      this.updateSpellDemoLoop(dt);
+      this.updateHud();
+      return;
+    }
+
     if (this.ended) {
       this.updateEndedState(dt);
       this.updateHud();
       return;
     }
 
-    this.updateTension(dt);
+    if (!this.trainingMode) {
+      this.updateTension(dt);
+    }
     if (this.ended) {
       this.updateEndedState(dt);
       this.updateHud();
@@ -379,7 +743,18 @@ export class RuneGatesHUD {
 
     this.timeRemaining = Math.max(0, this.timeRemaining - dt);
     this.updateMatchClockAndPeriods();
+    this.updateMomentumDifficultyCallout();
     if (this.timeRemaining <= 0) {
+      if (this.trainingMode) {
+        this.ended = true;
+        this.endReason = "timer";
+        this.target = null;
+        this.wasInsideTarget = false;
+        this.flashCombo("TRAINING COMPLETE", "great");
+        this.showStatus("Training complete • starting match", "offense", 1.05);
+        this.emitSessionEnd();
+        return;
+      }
       this.ended = true;
       this.endReason = "timer";
       this.target = null;
@@ -402,7 +777,9 @@ export class RuneGatesHUD {
       return;
     }
 
-    this.updateEnemyAttack(dt);
+    if (!this.trainingMode) {
+      this.updateEnemyAttack(dt);
+    }
 
     if (this.target) {
       this.target.age += dt;
@@ -433,7 +810,13 @@ export class RuneGatesHUD {
         this.spawnDelay = 0.18;
         this.combo = 0;
         this.flashCombo("MISS", "miss");
-        this.applyMissPressure();
+        if (this.trainingMode) {
+          if (!this.statusPersistent && this.statusTransientTimer <= 0) {
+            this.showStatus("Training miss • keep tracking the next gate", "offense", 0.8);
+          }
+        } else {
+          this.applyMissPressure();
+        }
       }
     } else {
       this.spawnDelay -= dt;
@@ -472,6 +855,11 @@ export class RuneGatesHUD {
 
   renderWorld(ctx: CanvasRenderingContext2D, padRect: Rect, timeSec: number): void {
     this.renderThreatEnvironment(ctx, padRect, timeSec);
+
+    if (this.faceoffSpell) {
+      this.renderFaceoffSpell(ctx, padRect, timeSec, this.faceoffSpell);
+      return;
+    }
 
     if (!this.target) {
       return;
@@ -787,15 +1175,346 @@ export class RuneGatesHUD {
       this.introAudio.src = "";
       this.introAudio = null;
     }
+    this.stopBackgroundMusic();
     window.removeEventListener("keydown", this.onKeyDownBound);
     this.panelEl.remove();
+    this.homePortraitSlot.root.remove();
+    this.guestPortraitSlot.root.remove();
+    this.countdownEl.remove();
     this.comboFlashEl.remove();
     this.statusEl.remove();
+  }
+
+  private startPreStartCountdown(durationSec: number): void {
+    const safeDuration = clamp(durationSec, 1.2, 8);
+    this.preStartCountdownActive = true;
+    this.preStartCountdownDurationSec = safeDuration;
+    this.preStartCountdownRemainingSec = safeDuration;
+    this.preStartCountdownSyncedToIntro = false;
+    this.updateCountdownDom();
+  }
+
+  private finishPreStartCountdown(): void {
+    this.preStartCountdownActive = false;
+    this.preStartCountdownRemainingSec = 0;
+    this.preStartCountdownSyncedToIntro = false;
+    this.updateCountdownDom();
+    if (this.trainingMode && !this.ended) {
+      this.showStatus("Training mode • no penalties, just practice hits", "offense", 1.2);
+    } else if (!this.ended && this.currentPeriod === 1) {
+      this.startFaceoffSpell("OPENING", "PLAYER");
+    }
+  }
+
+  private syncPreStartCountdownToIntroAudio(): void {
+    if (!this.preStartCountdownActive || !this.introAudio) {
+      return;
+    }
+    const duration = this.introAudio.duration;
+    if (!Number.isFinite(duration) || duration <= 0.05) {
+      return;
+    }
+    const safeDuration = clamp(duration, 1.2, 12);
+    this.preStartCountdownDurationSec = safeDuration;
+    this.preStartCountdownRemainingSec = clamp(safeDuration - this.introAudio.currentTime, 0, safeDuration);
+    this.preStartCountdownSyncedToIntro = true;
+  }
+
+  private updatePreStartCountdown(dt: number): void {
+    if (!this.preStartCountdownActive) {
+      this.updateCountdownDom();
+      return;
+    }
+
+    this.syncPreStartCountdownToIntroAudio();
+
+    if (this.introAudio && this.preStartCountdownSyncedToIntro) {
+      this.preStartCountdownRemainingSec = clamp(
+        this.preStartCountdownDurationSec - this.introAudio.currentTime,
+        0,
+        this.preStartCountdownDurationSec
+      );
+    } else {
+      this.preStartCountdownRemainingSec = Math.max(0, this.preStartCountdownRemainingSec - dt);
+    }
+
+    if (!this.introAudio && this.preStartCountdownSyncedToIntro) {
+      this.preStartCountdownRemainingSec = 0;
+    }
+
+    this.updateCountdownDom();
+
+    if (this.preStartCountdownRemainingSec <= 0.001) {
+      this.finishPreStartCountdown();
+    }
+  }
+
+  private getPreStartCountdownLabel(): string {
+    if (!this.preStartCountdownActive) {
+      return "";
+    }
+    const duration = Math.max(0.001, this.preStartCountdownDurationSec);
+    const progress = clamp(1 - this.preStartCountdownRemainingSec / duration, 0, 0.9999);
+    if (progress < 0.25) {
+      return "3";
+    }
+    if (progress < 0.5) {
+      return "2";
+    }
+    if (progress < 0.75) {
+      return "1";
+    }
+    return "GO!";
+  }
+
+  private updateCountdownDom(): void {
+    if (!this.preStartCountdownActive) {
+      this.countdownEl.classList.remove("visible");
+      this.countdownEl.textContent = "";
+      delete this.countdownEl.dataset.phase;
+      // Reset inline animation styles so the hidden plaque cannot linger as an empty dark pill.
+      this.countdownEl.style.removeProperty("opacity");
+      this.countdownEl.style.removeProperty("transform");
+      return;
+    }
+
+    const label = this.getPreStartCountdownLabel();
+    const phase = label === "GO!" ? "go" : "count";
+    const duration = Math.max(0.001, this.preStartCountdownDurationSec);
+    const progress = clamp(1 - this.preStartCountdownRemainingSec / duration, 0, 1);
+    const localPulse = 0.5 + 0.5 * Math.sin(progress * Math.PI * (phase === "go" ? 6 : 12));
+    const scale = phase === "go" ? 1.04 + localPulse * 0.09 : 0.96 + localPulse * 0.06;
+    const lift = phase === "go" ? 18 : 12;
+    const alpha = phase === "go" ? 0.98 : 0.94;
+
+    this.countdownEl.dataset.phase = phase;
+    this.countdownEl.textContent = label;
+    this.countdownEl.classList.add("visible");
+    this.countdownEl.style.opacity = alpha.toFixed(3);
+    this.countdownEl.style.transform = `translate(-50%, calc(-50% - ${lift}px)) scale(${scale.toFixed(3)})`;
+  }
+
+  private buildFaceoffSpellNodes(seed: number): Point[] {
+    const nodes: Point[] = [];
+    const nodeCount = 8;
+    const turns = 1.22 + Math.sin(seed * Math.PI * 2) * 0.18;
+    for (let i = 0; i < nodeCount; i += 1) {
+      const t = nodeCount <= 1 ? 1 : i / (nodeCount - 1);
+      const angle = -Math.PI * 0.62 + t * Math.PI * 2 * turns;
+      const radial = 0.24 - t * 0.14;
+      const wobble = Math.sin((t * 4.6 + seed) * Math.PI * 2) * 0.012;
+      const radius = radial + wobble;
+      const x = clamp(0.5 + Math.cos(angle) * radius * 0.68, 0.18, 0.82);
+      const y = clamp(0.5 + Math.sin(angle) * radius * 1.08, 0.12, 0.88);
+      nodes.push({ x, y });
+    }
+    return nodes;
+  }
+
+  private getPeriodFaceoffFavoredPossession(): Possession {
+    const diff = this.getGoalDifferential();
+    if (diff <= -1) {
+      return "PLAYER";
+    }
+    if (diff >= 1) {
+      return "ENEMY";
+    }
+    return this.currentPeriod === 1 ? "PLAYER" : this.possession;
+  }
+
+  private startFaceoffSpell(trigger: FaceoffSpellTrigger, favoredPossession: Possession): void {
+    if (this.ended) {
+      return;
+    }
+    if (this.trainingMode) {
+      this.changePossession(favoredPossession, "FACEOFF", { fromFaceoffResolution: true });
+      return;
+    }
+
+    const difficulty = this.getDifficultySnapshot();
+    const pad = this.getPadBounds();
+    const minDim = Math.max(240, Math.min(pad.width, pad.height));
+    const openingBonus = trigger === "OPENING" ? 0.35 : 0;
+    const rookieBonus = this.isRookieWardActive() ? 0.4 : 0;
+    const demoBonus = this.spellDemoMode ? 0.95 : 0;
+    const traceDuration = clamp(2.25 + openingBonus + rookieBonus + demoBonus - difficulty.baseIntensity * 0.25, 1.7, 4.4);
+    const snapWindow = clamp(
+      0.72 + (this.isRookieWardActive() ? 0.22 : 0) + (this.spellDemoMode ? 0.3 : 0) - difficulty.baseIntensity * 0.06,
+      0.55,
+      1.45
+    );
+    const cueDelay = clamp(0.34 + (this.spellDemoMode ? 0.18 : 0) - difficulty.baseIntensity * 0.06, 0.2, 0.7);
+    const centerHold = this.isRookieWardActive() || this.spellDemoMode ? 0.11 : 0.145;
+    const runeSpinSeed = Math.random() * 1000;
+    const totalDurationSec = traceDuration + cueDelay + snapWindow;
+    this.faceoffSpell = {
+      trigger,
+      favoredPossession,
+      stage: "TRACE",
+      nodes: this.buildFaceoffSpellNodes(runeSpinSeed),
+      currentNodeIndex: 0,
+      traceTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.09),
+      snapTolerancePx: minDim * (this.isRookieWardActive() || this.spellDemoMode ? 0.118 : 0.096),
+      totalDurationSec,
+      timeRemainingSec: traceDuration,
+      snapCueDelaySec: cueDelay,
+      snapWindowRemainingSec: snapWindow,
+      centerHoldSec: 0,
+      centerHoldGoalSec: centerHold,
+      runeSpinSeed
+    };
+
+    this.target = null;
+    this.wasInsideTarget = false;
+    this.spawnDelay = 0.16;
+    this.combo = 0;
+    this.possessionLockTimer = 0;
+
+    if (trigger === "OPENING") {
+      this.flashCombo(this.spellDemoMode ? "SPELL DEMO" : "CAST FACEOFF RUNE", "combo");
+      this.showStatus(
+        this.spellDemoMode ? "Demo pace • trace rune then snap center" : "Trace the rune path, then snap to center",
+        "offense",
+        this.spellDemoMode ? 0.92 : 1.1
+      );
+      return;
+    }
+
+    if (trigger === "PERIOD") {
+      this.flashCombo("PERIOD FACEOFF", "hit");
+      this.showStatus(
+        `${this.getPeriodLabel(this.currentPeriod)} period draw • winner takes puck`,
+        favoredPossession === "PLAYER" ? "offense" : "defense",
+        1.05
+      );
+      return;
+    }
+
+    this.flashCombo("CENTER FACEOFF", "hit");
+    this.showStatus("Rune draw • winner takes puck", favoredPossession === "PLAYER" ? "offense" : "defense", 0.95);
+  }
+
+  private updateFaceoffSpell(dt: number): void {
+    const spell = this.faceoffSpell;
+    if (!spell) {
+      return;
+    }
+
+    const pad = this.getPadBounds();
+    const puckPx = padToPixel(pad, this.provider.getPosition());
+    spell.timeRemainingSec = Math.max(0, spell.timeRemainingSec - dt);
+
+    if (spell.stage === "TRACE") {
+      const node = spell.nodes[spell.currentNodeIndex];
+      const nodePx = padToPixel(pad, node);
+      const dist = Math.hypot(puckPx.x - nodePx.x, puckPx.y - nodePx.y);
+      if (dist <= spell.traceTolerancePx) {
+        spell.currentNodeIndex += 1;
+        this.effects.spawnHitBurst(nodePx.x, nodePx.y, 198, 0.72 + spell.currentNodeIndex * 0.05);
+        if (spell.currentNodeIndex >= spell.nodes.length) {
+          spell.stage = "SNAP";
+          spell.timeRemainingSec = spell.snapCueDelaySec + spell.snapWindowRemainingSec;
+          this.flashCombo("SNAP TO CENTER", "great");
+          this.showStatus("Hold... then snap to center on cue", "offense", 0.88);
+        }
+      }
+
+      if (spell.timeRemainingSec <= 0) {
+        this.resolveFaceoffSpell(false);
+      }
+      return;
+    }
+
+    if (spell.snapCueDelaySec > 0) {
+      spell.snapCueDelaySec = Math.max(0, spell.snapCueDelaySec - dt);
+      spell.timeRemainingSec = spell.snapCueDelaySec + spell.snapWindowRemainingSec;
+      if (spell.snapCueDelaySec <= 0.001) {
+        const cx = pad.x + pad.width * 0.5;
+        const cy = pad.y + pad.height * 0.5;
+        this.effects.spawnShockwave(cx, cy, 212, 1.05);
+        this.flashCombo("NOW!", "perfect");
+      }
+      return;
+    }
+
+    spell.snapWindowRemainingSec = Math.max(0, spell.snapWindowRemainingSec - dt);
+    spell.timeRemainingSec = spell.snapWindowRemainingSec;
+    const centerPx = {
+      x: pad.x + pad.width * 0.5,
+      y: pad.y + pad.height * 0.5
+    };
+    const distToCenter = Math.hypot(puckPx.x - centerPx.x, puckPx.y - centerPx.y);
+    if (distToCenter <= spell.snapTolerancePx) {
+      spell.centerHoldSec = Math.min(spell.centerHoldGoalSec, spell.centerHoldSec + dt);
+    } else {
+      spell.centerHoldSec = Math.max(0, spell.centerHoldSec - dt * 1.8);
+    }
+
+    if (spell.centerHoldSec >= spell.centerHoldGoalSec) {
+      this.resolveFaceoffSpell(true);
+      return;
+    }
+
+    if (spell.snapWindowRemainingSec <= 0) {
+      this.resolveFaceoffSpell(false);
+    }
+  }
+
+  private updateSpellDemoLoop(dt: number): void {
+    this.faceoffDemoCooldown = Math.max(0, this.faceoffDemoCooldown - dt);
+    if (this.faceoffSpell || this.faceoffDemoCooldown > 0 || this.ended) {
+      return;
+    }
+    const favored: Possession = this.faceoffDemoRounds % 2 === 0 ? "PLAYER" : "ENEMY";
+    this.faceoffDemoRounds += 1;
+    this.startFaceoffSpell("OPENING", favored);
+  }
+
+  private resolveFaceoffSpell(success: boolean): void {
+    const spell = this.faceoffSpell;
+    if (!spell || this.ended) {
+      return;
+    }
+
+    this.faceoffSpell = null;
+    const winner: Possession = success ? "PLAYER" : spell.favoredPossession;
+    this.changePossession(winner, "FACEOFF", { fromFaceoffResolution: true });
+
+    const pad = this.getPadBounds();
+    const cx = pad.x + pad.width * 0.5;
+    const cy = pad.y + pad.height * 0.5;
+    const label = winner === "PLAYER" ? "OFFENSE" : "DEFENSE";
+    const hue = winner === "PLAYER" ? 200 : 16;
+    const tone = winner === "PLAYER" ? "offense" : "defense";
+    const comboVariant = winner === "PLAYER" ? (success ? "great" : "hit") : "late";
+
+    if (success && winner === "PLAYER" && spell.favoredPossession === "ENEMY") {
+      this.flashCombo("RUNE STEAL", "perfect");
+      this.showStatus("Spell steal • you win the draw", "goal", 1.1);
+    } else if (success && winner === "PLAYER") {
+      this.flashCombo("DRAW WON", comboVariant);
+      this.showStatus("Clean draw • offense starts", tone, 1);
+    } else if (!success && winner === "PLAYER") {
+      this.flashCombo("SCRAMBLE WIN", comboVariant);
+      this.showStatus("Scramble draw • you still keep puck", tone, 0.95);
+    } else {
+      this.flashCombo("DRAW LOST", comboVariant);
+      this.showStatus("Lost draw • defend the rush", tone, 1.05);
+    }
+
+    this.effects.spawnFloatingText(cx, cy - Math.min(pad.width, pad.height) * 0.07, label, hue);
+    this.effects.spawnShockwave(cx, cy, hue, success ? 1.1 : 1.24);
+    this.effects.triggerShake(success ? 0.32 : 0.42);
+    this.playGameSfx(winner === "PLAYER" ? "offense" : "defense");
+    if (this.spellDemoMode) {
+      this.faceoffDemoCooldown = 0.85;
+    }
   }
 
   private playRandomIntroClip(): void {
     const clips = this.introClipUrls;
     if (clips.length === 0) {
+      this.tryStartBackgroundMusic();
       return;
     }
 
@@ -811,15 +1530,34 @@ export class RuneGatesHUD {
       this.introAudio.src = "";
       this.introAudio = null;
     }
+    this.stopBackgroundMusic();
 
     const audio = new Audio(clips[index] ?? clips[0]);
     audio.preload = "auto";
     audio.volume = 0.78;
+    audio.addEventListener("loadedmetadata", () => {
+      if (this.introAudio === audio) {
+        this.syncPreStartCountdownToIntroAudio();
+        this.updateCountdownDom();
+      }
+    });
+    audio.addEventListener("durationchange", () => {
+      if (this.introAudio === audio) {
+        this.syncPreStartCountdownToIntroAudio();
+        this.updateCountdownDom();
+      }
+    });
     audio.addEventListener(
       "ended",
       () => {
         if (this.introAudio === audio) {
+          if (this.preStartCountdownActive) {
+            this.preStartCountdownRemainingSec = 0;
+            this.preStartCountdownSyncedToIntro = true;
+            this.updateCountdownDom();
+          }
           this.introAudio = null;
+          this.tryStartBackgroundMusic();
         }
       },
       { once: true }
@@ -829,7 +1567,53 @@ export class RuneGatesHUD {
       if (this.introAudio === audio) {
         this.introAudio = null;
       }
+      this.tryStartBackgroundMusic();
     });
+  }
+
+  private getAnnouncerToneTier(): "ROOKIE" | "MILD" | "FULL" {
+    if (this.trainingMode) {
+      return "ROOKIE";
+    }
+    if (this.playerRunCount < 3) {
+      return "ROOKIE";
+    }
+    if (this.playerRunCount < 12) {
+      return "MILD";
+    }
+    return "FULL";
+  }
+
+  private getAvailableSfxClipsForKey(key: GameSfxKey): string[] {
+    const clips = this.gameSfxClips[key] ?? [];
+    const tier = this.getAnnouncerToneTier();
+    if (clips.length === 0) {
+      return clips;
+    }
+
+    const isHarsh = (url: string): boolean => /you%20suck|you suck|teerible/i.test(url);
+    const isTaunt = (url: string): boolean => /boo|teerible|you%20lose|you lose|you%20suck|you suck/i.test(url);
+
+    if (tier === "FULL") {
+      return clips;
+    }
+    if (tier === "MILD") {
+      if (key === "warning" || key === "goal_against" || key === "loss") {
+        const filtered = clips.filter((url) => !isHarsh(url));
+        return filtered.length > 0 ? filtered : clips;
+      }
+      return clips;
+    }
+
+    // Rookie/training tier: no taunt callouts on mistakes/goals against/loss.
+    if (key === "warning") {
+      return [];
+    }
+    if (key === "goal_against" || key === "loss") {
+      const filtered = clips.filter((url) => !isTaunt(url));
+      return filtered.length > 0 ? filtered : [];
+    }
+    return clips;
   }
 
   private playGameSfx(key: GameSfxKey): void {
@@ -837,7 +1621,7 @@ export class RuneGatesHUD {
     if (this.introAudio) {
       return;
     }
-    const clips = this.gameSfxClips[key];
+    const clips = this.getAvailableSfxClipsForKey(key);
     if (!clips || clips.length === 0) {
       return;
     }
@@ -861,27 +1645,118 @@ export class RuneGatesHUD {
     audio.preload = "auto";
     audio.volume =
       key === "goal" || key === "victory" ? 0.88 : key === "loss" || key === "goal_against" ? 0.8 : 0.72;
+    this.duckBackgroundMusic(key === "goal" || key === "goal_against" || key === "victory" || key === "loss" ? 950 : 520);
     void audio.play().catch(() => {
       // Ignore autoplay/user-gesture failures.
     });
   }
 
+  private updateBackgroundMusic(dt: number): void {
+    const bgm = this.bgmAudio;
+    if (!bgm) {
+      return;
+    }
+    const now = performance.now();
+    const targetGain = now < this.bgmDuckUntilMs ? this.bgmDuckVolume : 1;
+    const lerpRate = now < this.bgmDuckUntilMs ? 8.5 : 3.8;
+    const t = Math.min(1, dt * lerpRate);
+    this.bgmCurrentGain += (targetGain - this.bgmCurrentGain) * t;
+    bgm.volume = this.bgmBaseVolume * this.bgmCurrentGain;
+  }
+
+  private duckBackgroundMusic(durationMs: number): void {
+    if (!this.bgmAudio) {
+      return;
+    }
+    this.bgmDuckUntilMs = Math.max(this.bgmDuckUntilMs, performance.now() + Math.max(0, durationMs));
+  }
+
+  private stopBackgroundMusic(): void {
+    this.bgmDuckUntilMs = 0;
+    this.bgmCurrentGain = 0;
+    if (!this.bgmAudio) {
+      return;
+    }
+    this.bgmAudio.pause();
+    this.bgmAudio.src = "";
+    this.bgmAudio = null;
+  }
+
+  private tryStartBackgroundMusic(): void {
+    if (this.introAudio || this.bgmAudio || this.bgmTrackUrls.length === 0) {
+      return;
+    }
+    this.playNextBackgroundTrack();
+  }
+
+  private playNextBackgroundTrack(): void {
+    if (this.bgmTrackUrls.length === 0 || this.introAudio) {
+      return;
+    }
+
+    let index = Math.floor(Math.random() * this.bgmTrackUrls.length);
+    if (this.bgmTrackUrls.length > 1 && index === this.lastBgmTrackIndex) {
+      index = (index + 1 + Math.floor(Math.random() * (this.bgmTrackUrls.length - 1))) % this.bgmTrackUrls.length;
+    }
+    this.lastBgmTrackIndex = index;
+
+    this.stopBackgroundMusic();
+
+    const audio = new Audio(this.bgmTrackUrls[index] ?? this.bgmTrackUrls[0]);
+    audio.preload = "auto";
+    audio.loop = false;
+    this.bgmCurrentGain = 0.75;
+    audio.volume = this.bgmBaseVolume * this.bgmCurrentGain;
+    audio.addEventListener("ended", () => {
+      if (this.bgmAudio === audio) {
+        this.bgmAudio = null;
+        this.playNextBackgroundTrack();
+      }
+    });
+    audio.addEventListener("error", () => {
+      if (this.bgmAudio === audio) {
+        this.bgmAudio = null;
+        this.playNextBackgroundTrack();
+      }
+    });
+    this.bgmAudio = audio;
+    void audio.play().catch(() => {
+      if (this.bgmAudio === audio) {
+        this.bgmAudio = null;
+      }
+    });
+  }
+
   private spawnTarget(): void {
     const margin = 0.12;
+    const difficulty = this.getDifficultySnapshot();
     const pressure = this.riftPressure + (this.breachSurgeTimer > 0 ? 0.16 : 0);
     const rubberBand = this.getEnemyRubberBand();
     const assist = this.getPlayerAssist();
     const enemyHasPuck = this.possession === "ENEMY";
     const chaos = clamp(
-      this.monsterTeam.gateAggression * 0.18 + (enemyHasPuck ? 0.11 : 0) + Math.max(0, rubberBand) * 0.24 - assist * 0.14,
+      this.monsterTeam.gateAggression * 0.18 +
+        (enemyHasPuck ? 0.11 : 0) +
+        Math.max(0, rubberBand) * 0.24 -
+        assist * 0.14 +
+        difficulty.gateChaosBonus +
+        (enemyHasPuck ? difficulty.enemySurge * 0.16 : difficulty.enemySurge * 0.05),
       0,
       0.42
     );
 
     const radiusBase = enemyHasPuck ? 0.055 : 0.06;
-    const radius = clamp(radiusBase + Math.random() * 0.03 - chaos * 0.025 + assist * 0.014, 0.043, 0.089);
+    const radius = clamp(
+      radiusBase + Math.random() * 0.03 - chaos * 0.025 + assist * 0.014 + difficulty.gateRadiusBias,
+      0.041,
+      0.092
+    );
 
-    const lifetimeScale = clamp(1 - Math.min(0.34, pressure * 0.2 + chaos * 0.32) + assist * 0.12, 0.66, 1.2);
+    const lifetimeScale = clamp(
+      1 - Math.min(0.34, pressure * 0.2 + chaos * 0.32) + assist * 0.12 + difficulty.gateLifetimeBias,
+      0.62,
+      1.28
+    );
     const lifetimeBase = enemyHasPuck ? 1.28 + Math.random() * 0.72 : 1.38 + Math.random() * 0.78;
 
     const puck = this.provider.getPosition();
@@ -907,9 +1782,10 @@ export class RuneGatesHUD {
       (enemyHasPuck ? 0.06 : 0.03) +
         chaos * 0.22 +
         pressure * 0.035 -
-        assist * 0.03,
+        assist * 0.03 +
+        difficulty.driftBias,
       0,
-      0.16
+      0.2
     );
     const driftAngle = Math.random() * Math.PI * 2;
 
@@ -1015,6 +1891,7 @@ export class RuneGatesHUD {
         this.addEnemyAttackCharge(isCenterHit ? 0.035 : 0.065);
       }
     }
+    this.applyThreatSafetyRails();
 
     if (grade === "PERFECT") {
       this.flashCombo(`PERFECT +${points}`, "perfect");
@@ -1099,27 +1976,225 @@ export class RuneGatesHUD {
     return this.sessionDuration > 0 ? clamp((this.sessionDuration - this.timeRemaining) / this.sessionDuration, 0, 1) : 0;
   }
 
+  private getCurrentPeriodProgress(): number {
+    if (this.periodDurationSec <= 0) {
+      return 0;
+    }
+    const elapsedTotal = this.sessionDuration - this.timeRemaining;
+    const periodStart = this.currentPeriodIndex * this.periodDurationSec;
+    return clamp((elapsedTotal - periodStart) / this.periodDurationSec, 0, 1);
+  }
+
   private getGoalDifferential(): number {
     return this.playerGoals - this.enemyGoals;
   }
 
+  private isBreachMechanicEnabled(): boolean {
+    return !this.trainingMode && this.threatProgression.breachEnabled;
+  }
+
+  private isRookieWardActive(): boolean {
+    return !this.trainingMode && this.threatProgression.rookieWardActive;
+  }
+
+  private applyThreatSafetyRails(): void {
+    if (this.trainingMode) {
+      this.riftPressure = clamp(this.riftPressure, 0, 0.18);
+      this.sealIntegrity = clamp(Math.max(this.sealIntegrity, 0.82), 0, 1);
+      return;
+    }
+    if (this.isRookieWardActive()) {
+      // Early matches teach offense/defense + timing first. Threat is visible but cannot end the run yet.
+      this.riftPressure = clamp(this.riftPressure, 0.02, 0.58);
+      this.sealIntegrity = clamp(Math.max(this.sealIntegrity, 0.38), 0, 1);
+    }
+  }
+
+  private getDifficultySnapshot(): DifficultySnapshot {
+    if (this.trainingMode) {
+      return {
+        pace: "OPENING",
+        paceLabel: "Training • forgiving practice gates",
+        paceShort: "Training",
+        baseIntensity: 0,
+        openingGrace: 0.4,
+        finalPush: 0,
+        playerMercy: 0.4,
+        enemySurge: 0,
+        gateChaosBonus: -0.08,
+        gateRadiusBias: 0.024,
+        gateLifetimeBias: 0.22,
+        driftBias: -0.02,
+        enemyAttackScale: 0,
+        tensionScale: 0,
+        playerShotChanceBias: 0.14,
+        enemyShotChanceBias: -0.2,
+        playerThresholdAssist: 0.16,
+        enemyThresholdPressure: -0.12,
+        missPenaltyScale: 0
+      };
+    }
+
+    const periodProgress = this.getCurrentPeriodProgress();
+
+    let pace: DifficultyPace = "OPENING";
+    let baseIntensity = 0.1 + periodProgress * 0.18;
+    if (this.currentPeriodIndex === 1) {
+      pace = "PRESSURE";
+      baseIntensity = 0.34 + periodProgress * 0.24;
+    } else if (this.currentPeriodIndex >= 2) {
+      pace = "FINAL_PUSH";
+      baseIntensity = 0.62 + periodProgress * 0.3;
+    }
+
+    const openingGrace = this.currentPeriodIndex === 0 ? 0.2 + (1 - periodProgress) * 0.12 : 0;
+    const finalPush =
+      this.currentPeriodIndex >= 2 ? 0.16 + periodProgress * 0.2 : this.currentPeriodIndex === 1 ? 0.03 + periodProgress * 0.05 : 0;
+
+    const lead = Math.max(0, this.getGoalDifferential());
+    const trail = Math.max(0, -this.getGoalDifferential());
+    const enemySurge = clamp(
+      lead * (0.1 + 0.07 * this.monsterTeam.comebackBias) +
+        Math.max(0, lead - 1) * 0.11 +
+        finalPush * 0.55,
+      0,
+      0.46
+    );
+    const playerMercy = clamp(
+      trail * 0.16 +
+        Math.max(0, trail - 1) * 0.08 +
+        openingGrace * 0.55 +
+        (this.currentPeriodIndex === 0 ? 0.05 : 0),
+      0,
+      0.42
+    );
+
+    let paceLabel = "Opening Shift • Forgiving gates";
+    let paceShort = "Opening";
+    if (pace === "PRESSURE") {
+      paceLabel = "Pressure Shift • Monster gates speed up";
+      paceShort = "Pressure";
+    } else if (pace === "FINAL_PUSH") {
+      paceLabel = "Final Push • Smaller, faster gates";
+      paceShort = "Final Push";
+    }
+
+    const snapshot: DifficultySnapshot = {
+      pace,
+      paceLabel,
+      paceShort,
+      baseIntensity: clamp(baseIntensity, 0, 1),
+      openingGrace,
+      finalPush,
+      playerMercy,
+      enemySurge,
+      gateChaosBonus: baseIntensity * 0.14 + enemySurge * 0.28 - playerMercy * 0.18,
+      gateRadiusBias:
+        playerMercy * 0.018 +
+        openingGrace * 0.012 -
+        baseIntensity * 0.008 -
+        enemySurge * 0.015 -
+        finalPush * 0.008,
+      gateLifetimeBias:
+        playerMercy * 0.14 +
+        openingGrace * 0.08 -
+        baseIntensity * 0.1 -
+        enemySurge * 0.14 -
+        finalPush * 0.08,
+      driftBias: baseIntensity * 0.02 + enemySurge * 0.06 - playerMercy * 0.03 + finalPush * 0.03,
+      enemyAttackScale: clamp(
+        0.9 + baseIntensity * 0.28 + enemySurge * 0.22 + finalPush * 0.16 - playerMercy * 0.1,
+        0.8,
+        1.55
+      ),
+      tensionScale: clamp(
+        0.88 + baseIntensity * 0.34 + finalPush * 0.18 + enemySurge * 0.18 - playerMercy * 0.16,
+        0.8,
+        1.5
+      ),
+      playerShotChanceBias: clamp(playerMercy * 0.08 - enemySurge * 0.03, -0.04, 0.12),
+      enemyShotChanceBias: clamp(baseIntensity * 0.03 + enemySurge * 0.09 + finalPush * 0.04 - playerMercy * 0.05, -0.04, 0.14),
+      playerThresholdAssist: clamp(playerMercy * 0.22 + openingGrace * 0.06, 0, 0.14),
+      enemyThresholdPressure: clamp(enemySurge * 0.2 + finalPush * 0.06 - playerMercy * 0.04, -0.03, 0.15),
+      missPenaltyScale: clamp(
+        0.9 + baseIntensity * 0.24 + enemySurge * 0.2 + finalPush * 0.12 - playerMercy * 0.12,
+        0.82,
+        1.5
+      )
+    };
+
+    if (this.isRookieWardActive()) {
+      const rookieEase = 1;
+      snapshot.paceLabel = `${snapshot.paceLabel} • Rookie ward`;
+      snapshot.gateChaosBonus -= 0.05 * rookieEase;
+      snapshot.gateRadiusBias += 0.02 * rookieEase;
+      snapshot.gateLifetimeBias += 0.18 * rookieEase;
+      snapshot.driftBias -= 0.02 * rookieEase;
+      snapshot.enemyAttackScale = clamp(snapshot.enemyAttackScale * 0.84, 0.65, 1.15);
+      snapshot.tensionScale = clamp(snapshot.tensionScale * 0.52, 0.28, 0.9);
+      snapshot.playerShotChanceBias = clamp(snapshot.playerShotChanceBias + 0.06, -0.04, 0.18);
+      snapshot.enemyShotChanceBias = clamp(snapshot.enemyShotChanceBias - 0.05, -0.12, 0.14);
+      snapshot.playerThresholdAssist = clamp(snapshot.playerThresholdAssist + 0.08, 0, 0.22);
+      snapshot.enemyThresholdPressure = clamp(snapshot.enemyThresholdPressure - 0.08, -0.12, 0.15);
+      snapshot.missPenaltyScale = clamp(snapshot.missPenaltyScale * 0.62, 0.45, 0.95);
+      return snapshot;
+    }
+
+    const escalationTier = this.threatProgression.escalationTier;
+    if (escalationTier > 0) {
+      const step = Math.min(3, escalationTier);
+      snapshot.paceLabel = `${snapshot.paceLabel} • Rift tier ${this.threatProgression.threatTier}`;
+      snapshot.gateChaosBonus += 0.018 * step;
+      snapshot.gateRadiusBias -= 0.004 * step;
+      snapshot.gateLifetimeBias -= 0.035 * step;
+      snapshot.driftBias += 0.01 * step;
+      snapshot.enemyAttackScale = clamp(snapshot.enemyAttackScale + 0.06 * step, 0.8, 1.75);
+      snapshot.tensionScale = clamp(snapshot.tensionScale + 0.08 * step, 0.8, 1.8);
+      snapshot.enemyShotChanceBias = clamp(snapshot.enemyShotChanceBias + 0.02 * step, -0.04, 0.2);
+      snapshot.enemyThresholdPressure = clamp(snapshot.enemyThresholdPressure + 0.02 * step, -0.03, 0.22);
+      snapshot.missPenaltyScale = clamp(snapshot.missPenaltyScale + 0.06 * step, 0.82, 1.8);
+    }
+
+    return snapshot;
+  }
+
+  private getPeriodDifficultyCallout(period: number): string {
+    if (period === 1) {
+      return "opening shift • forgiving gates";
+    }
+    if (period === 2) {
+      return "pressure rises • monsters speed up";
+    }
+    if (period === 3) {
+      return "final push • smaller, faster gates";
+    }
+    return "pressure rising";
+  }
+
   private getEnemyRubberBand(): number {
+    const difficulty = this.getDifficultySnapshot();
     const lead = Math.max(0, this.getGoalDifferential());
     const trail = Math.max(0, -this.getGoalDifferential());
     const periodRamp = this.currentPeriodIndex * 0.08;
     const timeRamp = this.getMatchProgress() * 0.12;
     return clamp(
-      lead * 0.16 * this.monsterTeam.comebackBias - trail * 0.1 + periodRamp + timeRamp,
+      lead * 0.16 * this.monsterTeam.comebackBias -
+        trail * 0.1 +
+        periodRamp +
+        timeRamp +
+        difficulty.enemySurge * 0.34 -
+        difficulty.playerMercy * 0.12,
       -0.18,
       0.52
     );
   }
 
   private getPlayerAssist(): number {
+    const difficulty = this.getDifficultySnapshot();
     const lead = Math.max(0, this.getGoalDifferential());
     const trail = Math.max(0, -this.getGoalDifferential());
     const openingEase = this.currentPeriodIndex === 0 ? 0.08 : 0;
-    return clamp(trail * 0.12 + openingEase - lead * 0.06, 0, 0.32);
+    return clamp(trail * 0.12 + openingEase - lead * 0.06 + difficulty.playerMercy * 0.45, 0, 0.42);
   }
 
   private getPossessionLabel(): string {
@@ -1127,22 +2202,37 @@ export class RuneGatesHUD {
   }
 
   private getPlayerShotThreshold(): number {
+    const difficulty = this.getDifficultySnapshot();
     const assist = this.getPlayerAssist();
-    return Math.max(0.65, this.monsterTeam.playerGoalThreshold - assist * 0.18);
+    return Math.max(0.62, this.monsterTeam.playerGoalThreshold - assist * 0.18 - difficulty.playerThresholdAssist);
   }
 
   private getPlayerTakeawayThreshold(): number {
+    const difficulty = this.getDifficultySnapshot();
     const assist = this.getPlayerAssist();
-    return Math.max(0.52, this.monsterTeam.playerTakeawayThreshold - assist * 0.16);
+    return Math.max(0.48, this.monsterTeam.playerTakeawayThreshold - assist * 0.16 - difficulty.playerThresholdAssist * 0.85);
   }
 
   private getEnemyShotThreshold(): number {
+    const difficulty = this.getDifficultySnapshot();
     const rubberBand = this.getEnemyRubberBand();
-    return clamp(this.monsterTeam.enemyGoalThreshold - rubberBand * 0.2, 0.65, 1.2);
+    return clamp(this.monsterTeam.enemyGoalThreshold - rubberBand * 0.2 - difficulty.enemyThresholdPressure, 0.6, 1.2);
   }
 
-  private changePossession(next: Possession, reason: "TURNOVER" | "TAKEAWAY" | "FACEOFF" | "SAVE"): void {
+  private changePossession(
+    next: Possession,
+    reason: "TURNOVER" | "TAKEAWAY" | "FACEOFF" | "SAVE",
+    options?: { fromFaceoffResolution?: boolean }
+  ): void {
     if (this.ended) {
+      return;
+    }
+    if (reason === "FACEOFF" && !options?.fromFaceoffResolution) {
+      this.startFaceoffSpell("GOAL_RESET", next);
+      return;
+    }
+    if (this.trainingMode && next === "ENEMY") {
+      // Practice mode keeps the player on offense to focus on tracking/hit timing.
       return;
     }
     if (reason !== "FACEOFF" && next !== this.possession && this.possessionLockTimer > 0) {
@@ -1207,12 +2297,23 @@ export class RuneGatesHUD {
     if (this.ended || this.possession !== "PLAYER") {
       return;
     }
+    const difficulty = this.getDifficultySnapshot();
     const comboBoost = Math.min(0.3, this.combo * 0.035);
     const perfectBoost = Math.min(0.18, this.perfects * 0.006);
     const rubberBand = this.getEnemyRubberBand();
     const chaosPenalty = Math.max(0, rubberBand) * 0.16;
     const pressurePenalty = this.riftPressure * 0.08;
-    const chance = clamp(0.54 + comboBoost + perfectBoost - chaosPenalty - pressurePenalty, 0.34, 0.9);
+    const chance = clamp(
+      0.54 +
+        comboBoost +
+        perfectBoost -
+        chaosPenalty -
+        pressurePenalty +
+        difficulty.playerShotChanceBias -
+        difficulty.enemySurge * 0.035,
+      0.34,
+      0.9
+    );
     const roll = Math.random();
     if (roll <= chance) {
       this.scorePlayerGoal();
@@ -1241,9 +2342,10 @@ export class RuneGatesHUD {
   }
 
   private resolveEnemyShotAttempt(reason: "COUNTER" | "SUSTAINED PRESSURE"): void {
-    if (this.ended || this.possession !== "ENEMY") {
+    if (this.trainingMode || this.ended || this.possession !== "ENEMY") {
       return;
     }
+    const difficulty = this.getDifficultySnapshot();
     const pressure = clamp(this.riftPressure, 0, 1);
     const fracture = clamp(1 - this.sealIntegrity, 0, 1);
     const rubberBand = this.getEnemyRubberBand();
@@ -1254,7 +2356,9 @@ export class RuneGatesHUD {
         fracture * 0.12 +
         Math.max(0, rubberBand) * 0.2 +
         (reason === "COUNTER" ? 0.06 : 0) -
-        defensiveChain,
+        defensiveChain +
+        difficulty.enemyShotChanceBias -
+        difficulty.playerMercy * 0.06,
       0.22,
       0.86
     );
@@ -1299,9 +2403,12 @@ export class RuneGatesHUD {
     if (periodIndex !== this.currentPeriodIndex) {
       this.currentPeriodIndex = periodIndex;
       this.currentPeriod = periodIndex + 1;
+      if (!this.trainingMode && !this.ended) {
+        this.startFaceoffSpell("PERIOD", this.getPeriodFaceoffFavoredPossession());
+      }
       this.flashCombo(`${this.getPeriodLabel(this.currentPeriod)} PERIOD`, "hit");
       this.showStatus(
-        `${this.getPeriodLabel(this.currentPeriod)} period • ${this.possession === "PLAYER" ? "you start on offense" : "hold the line"}`,
+        `${this.getPeriodLabel(this.currentPeriod)} period • ${this.getPeriodDifficultyCallout(this.currentPeriod)}`,
         this.possession === "PLAYER" ? "offense" : "defense",
         1.25
       );
@@ -1309,7 +2416,36 @@ export class RuneGatesHUD {
     }
   }
 
+  private updateMomentumDifficultyCallout(): void {
+    if (this.trainingMode || this.spellDemoMode || this.ended || this.preStartCountdownActive || this.momentumDifficultyCooldown > 0) {
+      return;
+    }
+    const diff = this.getGoalDifferential();
+    const nextBand: -1 | 0 | 1 = diff >= 2 ? 1 : diff <= -2 ? -1 : 0;
+    if (nextBand === this.momentumDifficultyBand) {
+      return;
+    }
+    this.momentumDifficultyBand = nextBand;
+
+    if (nextBand === 1) {
+      this.flashCombo("MONSTER SURGE", "miss");
+      this.showStatus("Monster surge • gates accelerate while they defend", "danger", 1.15);
+      this.playGameSfx("warning");
+      this.momentumDifficultyCooldown = 3.8;
+      return;
+    }
+    if (nextBand === -1) {
+      this.flashCombo("COMEBACK WINDOW", "great");
+      this.showStatus("Comeback window • gates widen and slow slightly", "offense", 1.15);
+      this.momentumDifficultyCooldown = 3.2;
+      return;
+    }
+
+    this.momentumDifficultyCooldown = 1.8;
+  }
+
   private updateEnemyAttack(dt: number): void {
+    const difficulty = this.getDifficultySnapshot();
     if (this.possession !== "ENEMY") {
       const decay = 0.2 + this.getPlayerAssist() * 0.12;
       this.enemyAttackCharge = Math.max(0, this.enemyAttackCharge - decay * dt);
@@ -1332,7 +2468,8 @@ export class RuneGatesHUD {
         surgeBonus +
         rubberBand * 0.03 -
         comboSuppression) *
-      this.monsterTeam.offenseRate;
+      this.monsterTeam.offenseRate *
+      difficulty.enemyAttackScale;
 
     this.enemyAttackCharge = clamp(this.enemyAttackCharge + gain * dt, 0, 1.25);
     const enemyShotThreshold = this.getEnemyShotThreshold();
@@ -1390,6 +2527,7 @@ export class RuneGatesHUD {
 
     this.riftPressure = clamp(this.riftPressure - 0.12, 0, 1);
     this.sealIntegrity = clamp(this.sealIntegrity + 0.04, 0, 1);
+    this.applyThreatSafetyRails();
     this.enemyAttackCharge = clamp(this.enemyAttackCharge - 0.35, 0, 2);
     this.playerAttackCharge = 0;
   }
@@ -1415,6 +2553,7 @@ export class RuneGatesHUD {
 
     this.riftPressure = clamp(this.riftPressure + 0.08, 0, 1);
     this.sealIntegrity = clamp(this.sealIntegrity - 0.03, 0, 1);
+    this.applyThreatSafetyRails();
     this.playerAttackCharge = clamp(this.playerAttackCharge - 0.25, 0, 2);
     this.enemyAttackCharge = 0;
   }
@@ -1433,19 +2572,43 @@ export class RuneGatesHUD {
   }
 
   private updateHud(): void {
+    const inPreStartCountdown = this.preStartCountdownActive;
+    const activeFaceoffSpell = this.faceoffSpell;
+    const inFaceoffSpell = activeFaceoffSpell !== null;
+    const difficulty = this.getDifficultySnapshot();
     const elapsedTotal = this.sessionDuration - this.timeRemaining;
     const periodIndex = this.getCurrentPeriodIndex();
     const periodStart = periodIndex * this.periodDurationSec;
     const periodElapsed = clamp(elapsedTotal - periodStart, 0, this.periodDurationSec);
     const periodTimeRemaining = clamp(this.periodDurationSec - periodElapsed, 0, this.periodDurationSec);
     const periodTimeProgress = this.periodDurationSec > 0 ? clamp(periodTimeRemaining / this.periodDurationSec, 0, 1) : 0;
+    const countdownLabel = inPreStartCountdown ? this.getPreStartCountdownLabel() : "";
+    const countdownProgress =
+      inPreStartCountdown && this.preStartCountdownDurationSec > 0
+        ? clamp(this.preStartCountdownRemainingSec / this.preStartCountdownDurationSec, 0, 1)
+        : 0;
+    const faceoffTimeRemaining =
+      activeFaceoffSpell === null
+        ? 0
+        : activeFaceoffSpell.stage === "TRACE"
+          ? activeFaceoffSpell.timeRemainingSec
+          : activeFaceoffSpell.snapCueDelaySec + activeFaceoffSpell.snapWindowRemainingSec;
+    const faceoffTimeProgress =
+      activeFaceoffSpell === null
+        ? 0
+        : clamp(faceoffTimeRemaining / Math.max(0.0001, activeFaceoffSpell.totalDurationSec), 0, 1);
+    const timeProgress = inPreStartCountdown ? countdownProgress : inFaceoffSpell ? faceoffTimeProgress : periodTimeProgress;
+    const timeUrgency = 1 - timeProgress;
 
-    this.timerEl.textContent = formatClockMmSs(periodTimeRemaining);
+    this.timerEl.textContent = inPreStartCountdown
+      ? countdownLabel
+      : inFaceoffSpell
+        ? activeFaceoffSpell.stage === "SNAP" && activeFaceoffSpell.snapCueDelaySec <= 0.001
+          ? "NOW"
+          : formatClockMmSs(faceoffTimeRemaining)
+        : formatClockMmSs(periodTimeRemaining);
     setArcaneScoreboardScore(this.scoreboardRefs, this.playerGoals, this.enemyGoals);
     this.comboEl.textContent = `x${this.combo}`;
-
-    const timeProgress = periodTimeProgress;
-    const timeUrgency = 1 - timeProgress;
     const possessionThreshold =
       this.possession === "PLAYER" ? this.getPlayerShotThreshold() : this.getPlayerTakeawayThreshold();
     const scoreBandProgress = clamp(this.playerAttackCharge / Math.max(0.0001, possessionThreshold), 0, 1);
@@ -1463,19 +2626,66 @@ export class RuneGatesHUD {
     this.comboStatEl.dataset.state =
       this.combo >= 8 ? "overdrive" : this.combo >= 4 ? "hot" : this.combo >= 1 ? "warm" : "idle";
 
-    this.periodRailEl.textContent = `P${this.currentPeriod}/${this.periodCount} • ${this.getPeriodLabel(this.currentPeriod)} • ${this.getPossessionLabel()}`;
-    this.scoreLabelEl.textContent = this.ended ? "Final" : this.getPossessionLabel();
+    this.periodRailEl.textContent = inPreStartCountdown
+      ? this.trainingMode
+        ? "Training Start"
+        : "Opening Faceoff"
+      : this.spellDemoMode
+        ? "Spell Demo"
+      : inFaceoffSpell
+        ? "Faceoff Rune"
+      : this.trainingMode
+        ? "Training"
+        : `Period ${this.currentPeriod}`;
+    this.scoreLabelEl.textContent = inPreStartCountdown || inFaceoffSpell ? "Faceoff" : this.trainingMode ? "Practice" : this.ended ? "Final" : this.getPossessionLabel();
 
-    this.timeDialSubEl.textContent = this.ended
-      ? this.endReason === "breach"
-        ? "Seal shattered"
-        : "Final horn"
-      : `${this.getPeriodLabel(this.currentPeriod)} • ${Math.round(periodTimeRemaining)}s left`;
+    this.timeDialSubEl.textContent = inPreStartCountdown
+      ? this.introAudio
+        ? "Intro call • Faceoff ready"
+        : "Faceoff ready"
+      : inFaceoffSpell
+        ? activeFaceoffSpell.stage === "TRACE"
+          ? `Trace rune nodes • ${activeFaceoffSpell.currentNodeIndex}/${activeFaceoffSpell.nodes.length}`
+          : activeFaceoffSpell.snapCueDelaySec > 0.001
+            ? "Hold the channel • cue incoming"
+            : "Snap to center now"
+      : this.spellDemoMode
+        ? "Demo pacing • no score penalties"
+      : this.trainingMode
+        ? "Practice timer • no goals or breaches"
+      : this.isRookieWardActive()
+        ? `Rookie ward active • breach unlocks after ${BREACH_UNLOCK_RUNS} runs`
+      : this.ended
+        ? this.endReason === "breach"
+          ? "Seal shattered"
+          : "Final horn"
+        : `${this.getPeriodLabel(this.currentPeriod)} • ${Math.round(periodTimeRemaining)}s left`;
     this.scoreDialSubEl.textContent = this.ended
       ? `${this.monsterTeam.shortName} • Runes ${this.score.toLocaleString()}`
-      : `${this.possession === "PLAYER" ? "Shot" : "Takeaway"} ${Math.round(scoreBandProgress * 100)}% • Runes ${this.score.toLocaleString()}`;
-    this.comboDialSubEl.textContent =
-      this.combo > 0
+      : inFaceoffSpell
+        ? `Winner takes puck • Runes ${this.score.toLocaleString()}`
+      : this.spellDemoMode
+        ? `Faceoff demo rounds • ${this.faceoffDemoRounds}`
+      : this.trainingMode
+        ? `Practice score • Runes ${this.score.toLocaleString()}`
+      : inPreStartCountdown
+        ? `Opening shift • Runes ${this.score.toLocaleString()}`
+        : `${this.possession === "PLAYER" ? "Shot" : "Takeaway"} ${Math.round(scoreBandProgress * 100)}% • Runes ${this.score.toLocaleString()}`;
+    this.comboDialSubEl.textContent = inPreStartCountdown
+      ? "Track the gate • wait for GO!"
+      : inFaceoffSpell
+        ? activeFaceoffSpell.stage === "TRACE"
+          ? `Trace ${Math.min(activeFaceoffSpell.currentNodeIndex, activeFaceoffSpell.nodes.length)}/${activeFaceoffSpell.nodes.length}`
+          : activeFaceoffSpell.snapCueDelaySec > 0.001
+            ? "Steady..."
+            : `Center hold ${Math.round(clamp(activeFaceoffSpell.centerHoldSec / Math.max(0.0001, activeFaceoffSpell.centerHoldGoalSec), 0, 1) * 100)}%`
+      : this.spellDemoMode
+        ? "Practice rune draw rhythm"
+      : this.trainingMode
+        ? this.combo > 0
+          ? `Quick practice chain • x${this.combo}`
+          : "Quick hits build combo"
+      : this.combo > 0
         ? `${this.possession === "PLAYER" ? "Quick chain" : "Stop chain"} • x${this.combo}`
         : this.possession === "PLAYER"
           ? "Quick hits build shots"
@@ -1506,15 +2716,42 @@ export class RuneGatesHUD {
       pip.classList.toggle("is-overflow", this.combo >= 6 && i === this.comboPipsEls.length - 1);
     }
 
-    let phaseText = `Threat: Stable • ${this.getPossessionLabel()}`;
+    let phaseText = `Threat: Stable • ${this.getPossessionLabel()} • ${difficulty.paceShort}`;
     if (phase === "CRACKING") {
-      phaseText = `Threat: Cracking Ice • ${this.getPossessionLabel()}`;
+      phaseText = `Threat: Cracking Ice • ${this.getPossessionLabel()} • ${difficulty.paceShort}`;
     } else if (phase === "BREACH") {
-      phaseText = `Threat: Breach Surge${this.breachCount > 0 ? ` • ${this.breachCount}` : ""} • ${this.getPossessionLabel()}`;
+      phaseText = `Threat: Breach Surge${this.breachCount > 0 ? ` • ${this.breachCount}` : ""} • ${this.getPossessionLabel()} • ${difficulty.paceShort}`;
     } else if (this.breachCount > 0) {
-      phaseText = `Threat: Stable • Breaches ${this.breachCount} • ${this.getPossessionLabel()}`;
+      phaseText = `Threat: Stable • Breaches ${this.breachCount} • ${this.getPossessionLabel()} • ${difficulty.paceShort}`;
+    }
+    if (this.trainingMode && !inPreStartCountdown) {
+      phaseText = "Training • Forgiving gates • No taunts";
+    } else if (this.spellDemoMode) {
+      phaseText = inFaceoffSpell
+        ? activeFaceoffSpell.stage === "TRACE"
+          ? "Spell Demo • Trace rune path"
+          : activeFaceoffSpell.snapCueDelaySec > 0.001
+            ? "Spell Demo • Channeling"
+            : "Spell Demo • Snap to center"
+        : "Spell Demo • Next rune draw incoming";
+    } else if (this.isRookieWardActive() && !inPreStartCountdown) {
+      const runsLeft = this.threatProgression.runsUntilBreachUnlock;
+      phaseText =
+        runsLeft > 0
+          ? `Rookie Ward • Learn offense/defense • Breach unlocks in ${runsLeft}`
+          : "Rookie Ward • Learn offense/defense";
+    } else if (inFaceoffSpell) {
+      phaseText =
+        activeFaceoffSpell.stage === "TRACE"
+          ? "Faceoff Spell • Trace rune path"
+          : activeFaceoffSpell.snapCueDelaySec > 0.001
+            ? "Faceoff Spell • Channeling"
+            : "Faceoff Spell • Snap to center";
+    } else if (inPreStartCountdown) {
+      phaseText = "Faceoff Countdown • Match intro";
     }
     this.phaseEl.textContent = phaseText;
+    this.updateSidePortraitHud();
   }
 
   private pulseComboStat(): void {
@@ -1672,6 +2909,7 @@ export class RuneGatesHUD {
   }
 
   private updateTension(dt: number): void {
+    const difficulty = this.getDifficultySnapshot();
     this.breachSurgeTimer = Math.max(0, this.breachSurgeTimer - dt);
 
     const elapsed = this.sessionDuration - this.timeRemaining;
@@ -1693,38 +2931,50 @@ export class RuneGatesHUD {
       (this.breachSurgeTimer > 0 ? 0.015 : 0) +
       possessionDrainBias;
 
-    this.riftPressure = clamp(this.riftPressure + pressureGainRate * dt - comboWardRate * 0.6 * dt, 0, 1);
-    this.sealIntegrity = clamp(this.sealIntegrity - integrityDrainRate * dt + comboWardRate * dt, 0, 1);
+    this.riftPressure = clamp(
+      this.riftPressure + pressureGainRate * difficulty.tensionScale * dt - comboWardRate * 0.6 * dt,
+      0,
+      1
+    );
+    this.sealIntegrity = clamp(
+      this.sealIntegrity - integrityDrainRate * difficulty.tensionScale * dt + comboWardRate * dt,
+      0,
+      1
+    );
+    this.applyThreatSafetyRails();
     this.lowestIntegrity = Math.min(this.lowestIntegrity, this.sealIntegrity);
 
-    if (this.sealIntegrity <= 0.0001) {
+    if (this.isBreachMechanicEnabled() && this.sealIntegrity <= 0.0001) {
       this.triggerBreach();
     }
   }
 
   private applyMissPressure(): void {
     const onOffense = this.possession === "PLAYER";
+    const difficulty = this.getDifficultySnapshot();
+    const missScale = difficulty.missPenaltyScale;
     this.riftPressure = clamp(
-      this.riftPressure + (onOffense ? 0.11 : 0.15) + (this.breachSurgeTimer > 0 ? 0.04 : 0),
+      this.riftPressure + ((onOffense ? 0.11 : 0.15) + (this.breachSurgeTimer > 0 ? 0.04 : 0)) * missScale,
       0,
       1
     );
-    this.sealIntegrity = clamp(this.sealIntegrity - (onOffense ? 0.07 : 0.095), 0, 1);
-    this.addEnemyAttackCharge(onOffense ? 0.14 : 0.28);
+    this.sealIntegrity = clamp(this.sealIntegrity - (onOffense ? 0.07 : 0.095) * missScale, 0, 1);
+    this.addEnemyAttackCharge((onOffense ? 0.14 : 0.28) * (0.92 + difficulty.enemySurge * 0.3));
     if (onOffense && !this.ended) {
       this.changePossession("ENEMY", "TURNOVER");
     } else if (!this.ended) {
       this.playGameSfx("warning");
       this.showStatus("Defensive miss • enemy rush", "danger", 1.05);
     }
+    this.applyThreatSafetyRails();
     this.lowestIntegrity = Math.min(this.lowestIntegrity, this.sealIntegrity);
-    if (this.sealIntegrity <= 0.0001) {
+    if (this.isBreachMechanicEnabled() && this.sealIntegrity <= 0.0001) {
       this.triggerBreach();
     }
   }
 
   private triggerBreach(): void {
-    if (this.ended) {
+    if (this.ended || !this.isBreachMechanicEnabled()) {
       return;
     }
     const comboAtFail = this.combo;
@@ -1757,7 +3007,204 @@ export class RuneGatesHUD {
     this.flashCombo("BREACH!", "late");
   }
 
+  private renderFaceoffSpell(
+    ctx: CanvasRenderingContext2D,
+    padRect: Rect,
+    timeSec: number,
+    spell: FaceoffSpellState
+  ): void {
+    const minDim = Math.min(padRect.width, padRect.height);
+    const cx = padRect.x + padRect.width * 0.5;
+    const cy = padRect.y + padRect.height * 0.5;
+    const traceProgress = clamp(spell.currentNodeIndex / Math.max(1, spell.nodes.length), 0, 1);
+    const snapReady = spell.stage === "SNAP" && spell.snapCueDelaySec <= 0.001;
+    const snapHoldProgress =
+      spell.stage === "SNAP" ? clamp(spell.centerHoldSec / Math.max(0.0001, spell.centerHoldGoalSec), 0, 1) : 0;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(padRect.x, padRect.y, padRect.width, padRect.height, minDim * 0.036);
+    ctx.clip();
+
+    const veil = ctx.createRadialGradient(cx, cy, minDim * 0.08, cx, cy, minDim * 0.86);
+    veil.addColorStop(0, "rgba(52, 88, 136, 0.16)");
+    veil.addColorStop(0.6, "rgba(28, 46, 72, 0.14)");
+    veil.addColorStop(1, "rgba(8, 14, 24, 0.3)");
+    ctx.fillStyle = veil;
+    ctx.fillRect(padRect.x, padRect.y, padRect.width, padRect.height);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    const spin = timeSec * 0.45 + spell.runeSpinSeed * 0.01;
+
+    ctx.strokeStyle = "rgba(143, 205, 255, 0.2)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, minDim * 0.19, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(197, 226, 255, 0.15)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, minDim * 0.255, spin, spin + Math.PI * 1.55);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, minDim * 0.255, spin + Math.PI, spin + Math.PI * 2.55);
+    ctx.stroke();
+
+    ctx.rotate(-spin * 1.45);
+    ctx.strokeStyle = "rgba(215, 236, 255, 0.18)";
+    ctx.lineWidth = 1.1;
+    for (let i = 0; i < 10; i += 1) {
+      const ang = (Math.PI * 2 * i) / 10;
+      const inner = minDim * 0.112;
+      const outer = minDim * 0.14;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ang) * inner, Math.sin(ang) * inner);
+      ctx.lineTo(Math.cos(ang) * outer, Math.sin(ang) * outer);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const pointsPx = spell.nodes.map((node) => padToPixel(padRect, node));
+    if (pointsPx.length > 1) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.strokeStyle = "rgba(104, 160, 220, 0.24)";
+      ctx.lineWidth = minDim * 0.016;
+      ctx.beginPath();
+      ctx.moveTo(pointsPx[0].x, pointsPx[0].y);
+      for (let i = 1; i < pointsPx.length; i += 1) {
+        const p = pointsPx[i];
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+
+      const litStop = Math.min(pointsPx.length - 1, spell.currentNodeIndex);
+      if (litStop >= 1) {
+        ctx.strokeStyle = snapReady ? "rgba(255, 220, 142, 0.88)" : "rgba(135, 223, 255, 0.9)";
+        ctx.shadowColor = snapReady ? "rgba(255, 206, 115, 0.35)" : "rgba(122, 220, 255, 0.35)";
+        ctx.shadowBlur = 14;
+        ctx.lineWidth = minDim * 0.012;
+        ctx.beginPath();
+        ctx.moveTo(pointsPx[0].x, pointsPx[0].y);
+        for (let i = 1; i <= litStop; i += 1) {
+          const p = pointsPx[i];
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    const activeNodeIndex = Math.min(spell.currentNodeIndex, spell.nodes.length - 1);
+    for (let i = 0; i < pointsPx.length; i += 1) {
+      const node = pointsPx[i];
+      const isVisited = i < spell.currentNodeIndex;
+      const isActive = spell.stage === "TRACE" && i === activeNodeIndex;
+      const radius = minDim * (isActive ? 0.024 : isVisited ? 0.017 : 0.014);
+      const pulse = isActive ? 0.65 + 0.35 * Math.sin(timeSec * 10 + i * 0.8) : 0.35;
+      const alpha = isVisited ? 0.9 : isActive ? 0.88 : 0.4;
+
+      ctx.fillStyle = isVisited
+        ? `rgba(176, 233, 255, ${alpha.toFixed(3)})`
+        : `rgba(106, 166, 212, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isActive) {
+        ctx.strokeStyle = `rgba(205, 242, 255, ${(0.35 + pulse * 0.45).toFixed(3)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius * (1.45 + pulse * 0.35), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    const centerRadius = spell.snapTolerancePx;
+    const centerPulse = 0.5 + 0.5 * Math.sin(timeSec * (snapReady ? 18 : 8));
+    const centerColor = snapReady ? "255, 198, 110" : "136, 216, 255";
+    const centerAlpha = spell.stage === "SNAP" ? 0.86 : 0.28;
+
+    ctx.strokeStyle = `rgba(${centerColor}, ${centerAlpha.toFixed(3)})`;
+    ctx.lineWidth = spell.stage === "SNAP" ? 3.5 : 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, centerRadius * (spell.stage === "SNAP" ? 1 + centerPulse * 0.08 : 1), 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (spell.stage === "SNAP") {
+      ctx.strokeStyle = `rgba(${centerColor}, ${(0.25 + centerPulse * 0.4).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, centerRadius * 1.42, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (snapHoldProgress > 0.001) {
+        ctx.strokeStyle = `rgba(255, 221, 158, ${(0.62 + snapHoldProgress * 0.3).toFixed(3)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, centerRadius * 1.06, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * snapHoldProgress);
+        ctx.stroke();
+      }
+    }
+
+    const cueText =
+      spell.stage === "TRACE" ? "TRACE THE RUNE" : snapReady ? "SNAP TO CENTER" : "HOLD THE CHANNEL";
+    const cueSubText =
+      spell.stage === "TRACE"
+        ? `Nodes ${Math.min(spell.currentNodeIndex, spell.nodes.length)}/${spell.nodes.length}`
+        : snapReady
+          ? "Center hold to win possession"
+          : "Wait for the rune pulse";
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `700 ${clamp(minDim * 0.054, 18, 30)}px "Cinzel", "Trajan Pro", serif`;
+    ctx.fillStyle = snapReady ? "rgba(255, 226, 168, 0.96)" : "rgba(220, 240, 255, 0.9)";
+    ctx.fillText(cueText, cx, padRect.y + minDim * 0.14);
+    ctx.font = `600 ${clamp(minDim * 0.028, 12, 16)}px "Cinzel", "Trajan Pro", serif`;
+    ctx.fillStyle = "rgba(213, 229, 242, 0.78)";
+    ctx.fillText(cueSubText, cx, padRect.y + minDim * 0.19);
+
+    const meterWidth = padRect.width * 0.36;
+    const meterHeight = Math.max(8, minDim * 0.014);
+    const meterX = cx - meterWidth / 2;
+    const meterY = padRect.y + padRect.height - minDim * 0.08;
+    const remainingRatio =
+      spell.stage === "TRACE"
+        ? clamp(spell.timeRemainingSec / Math.max(0.0001, spell.totalDurationSec), 0, 1)
+        : clamp((spell.snapCueDelaySec + spell.snapWindowRemainingSec) / Math.max(0.0001, spell.totalDurationSec), 0, 1);
+    ctx.fillStyle = "rgba(12, 20, 34, 0.68)";
+    ctx.strokeStyle = "rgba(152, 208, 255, 0.24)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(meterX, meterY, meterWidth, meterHeight, meterHeight * 0.5);
+    ctx.fill();
+    ctx.stroke();
+
+    const fillWidth = meterWidth * remainingRatio;
+    if (fillWidth > 0.5) {
+      const bar = ctx.createLinearGradient(meterX, 0, meterX + meterWidth, 0);
+      bar.addColorStop(0, snapReady ? "rgba(255, 180, 104, 0.86)" : "rgba(120, 210, 255, 0.84)");
+      bar.addColorStop(1, snapReady ? "rgba(255, 231, 166, 0.94)" : "rgba(192, 234, 255, 0.96)");
+      ctx.fillStyle = bar;
+      ctx.beginPath();
+      ctx.roundRect(meterX, meterY, fillWidth, meterHeight, meterHeight * 0.5);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   private getThreatPhase(): ThreatPhase {
+    if (!this.isBreachMechanicEnabled()) {
+      if (this.riftPressure >= 0.45 || this.sealIntegrity <= 0.58) {
+        return "CRACKING";
+      }
+      return "STABLE";
+    }
     if (this.breachSurgeTimer > 0.05 || this.riftPressure >= 0.82 || this.sealIntegrity <= 0.2) {
       return "BREACH";
     }
@@ -2146,9 +3593,16 @@ export class RuneGatesHUD {
 
     ctx.save();
     ctx.fillStyle = `rgba(2, 4, 7, ${(alpha * 0.55).toFixed(3)})`;
+    // Keep monster presence readable without a hard top-center "bar" silhouette.
+    const browHaze = ctx.createRadialGradient(cx, topY, 2, cx, topY + padRect.height * 0.01, padRect.width * 0.2);
+    browHaze.addColorStop(0, `rgba(7, 10, 14, ${(alpha * 0.12).toFixed(3)})`);
+    browHaze.addColorStop(0.45, `rgba(4, 7, 10, ${(alpha * 0.08).toFixed(3)})`);
+    browHaze.addColorStop(1, "rgba(2, 4, 7, 0)");
+    ctx.fillStyle = browHaze;
     ctx.beginPath();
-    ctx.ellipse(cx, topY, padRect.width * 0.22, padRect.height * 0.11, 0, Math.PI, 0, true);
+    ctx.ellipse(cx, topY + padRect.height * 0.01, padRect.width * 0.18, padRect.height * 0.08, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.fillStyle = `rgba(2, 4, 7, ${(alpha * 0.55).toFixed(3)})`;
     ctx.beginPath();
     ctx.ellipse(padRect.x + padRect.width * 0.09, padRect.y + padRect.height * 0.52, padRect.width * 0.09, padRect.height * 0.15, 0.45, 0, Math.PI * 2);
     ctx.ellipse(padRect.x + padRect.width * 0.91, padRect.y + padRect.height * 0.5, padRect.width * 0.09, padRect.height * 0.15, -0.45, 0, Math.PI * 2);
@@ -2178,6 +3632,7 @@ export class RuneGatesHUD {
     const elapsedSec = Math.max(0, this.sessionDuration - this.timeRemaining);
     this.onSessionEnd?.({
       modeId: "RUNE_GATES_HUD",
+      trainingMode: this.trainingMode,
       endReason: this.endReason ?? "timer",
       durationSec: this.sessionDuration,
       elapsedSec: Number(elapsedSec.toFixed(2)),

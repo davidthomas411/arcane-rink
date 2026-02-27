@@ -10,6 +10,86 @@ export type Point = {
   y: number;
 };
 
+export type PadSurfaceSpec = {
+  widthInches: number;
+  heightInches: number;
+};
+
+type RuntimeTexture = {
+  image: HTMLImageElement;
+  ready: boolean;
+};
+
+// Real-world default shooting pad size. Later UI options can swap this spec.
+export const DEFAULT_PAD_SURFACE: PadSurfaceSpec = {
+  widthInches: 48,
+  heightInches: 24
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function createRuntimeTexture(url: string): RuntimeTexture {
+  const image = new Image();
+  image.decoding = "async";
+  const texture: RuntimeTexture = {
+    image,
+    ready: false
+  };
+  image.addEventListener("load", () => {
+    texture.ready = true;
+  });
+  image.src = url;
+  return texture;
+}
+
+const ICE_TEXTURE_COLOR = createRuntimeTexture(
+  new URL("../../tmp/Ice004_1K-JPG/Ice004_1K-JPG_Color.jpg", import.meta.url).href
+);
+const ICE_TEXTURE_ROUGH = createRuntimeTexture(new URL("../../tmp/Ice004.png", import.meta.url).href);
+const SNOW_TEXTURE_COLOR = createRuntimeTexture(
+  new URL("../../tmp/Snow014_1K-PNG/Snow014_1K-PNG_Color.png", import.meta.url).href
+);
+
+function drawTiledTexture(
+  ctx: CanvasRenderingContext2D,
+  rect: Rect,
+  texture: RuntimeTexture,
+  args: {
+    alpha: number;
+    tileScale: number;
+    driftX?: number;
+    driftY?: number;
+    composite?: GlobalCompositeOperation;
+  }
+): void {
+  if (!texture.ready || texture.image.naturalWidth <= 0 || texture.image.naturalHeight <= 0) {
+    return;
+  }
+
+  const tileW = Math.max(24, texture.image.naturalWidth * args.tileScale);
+  const tileH = Math.max(24, texture.image.naturalHeight * args.tileScale);
+  const driftX = ((args.driftX ?? 0) % tileW + tileW) % tileW;
+  const driftY = ((args.driftY ?? 0) % tileH + tileH) % tileH;
+  const startX = rect.x - tileW + driftX;
+  const startY = rect.y - tileH + driftY;
+  const endX = rect.x + rect.width + tileW;
+  const endY = rect.y + rect.height + tileH;
+
+  ctx.save();
+  ctx.globalAlpha = args.alpha;
+  if (args.composite) {
+    ctx.globalCompositeOperation = args.composite;
+  }
+  for (let y = startY; y < endY; y += tileH) {
+    for (let x = startX; x < endX; x += tileW) {
+      ctx.drawImage(texture.image, x, y, tileW, tileH);
+    }
+  }
+  ctx.restore();
+}
+
 function roundedRectPath(
   ctx: CanvasRenderingContext2D,
   rect: Rect,
@@ -34,9 +114,13 @@ function roundedRectPath(
   ctx.closePath();
 }
 
-export function computePadBounds(viewWidth: number, viewHeight: number): Rect {
+export function computePadBounds(
+  viewWidth: number,
+  viewHeight: number,
+  padSurface: PadSurfaceSpec = DEFAULT_PAD_SURFACE
+): Rect {
   const margin = Math.max(20, Math.min(viewWidth, viewHeight) * 0.05);
-  const aspect = 1.75;
+  const aspect = Math.max(0.1, padSurface.widthInches / Math.max(0.1, padSurface.heightInches));
   const maxWidth = Math.max(100, viewWidth - margin * 2);
   const maxHeight = Math.max(100, viewHeight - margin * 2);
 
@@ -164,9 +248,10 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
   const minDim = Math.min(rect.width, rect.height);
 
   const fill = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height);
-  fill.addColorStop(0, "rgba(19, 17, 15, 0.96)");
-  fill.addColorStop(0.42, "rgba(29, 23, 18, 0.95)");
-  fill.addColorStop(1, "rgba(24, 18, 16, 0.93)");
+  fill.addColorStop(0, "rgba(186, 208, 224, 0.94)");
+  fill.addColorStop(0.42, "rgba(164, 191, 212, 0.95)");
+  fill.addColorStop(0.75, "rgba(148, 176, 198, 0.94)");
+  fill.addColorStop(1, "rgba(138, 165, 187, 0.93)");
 
   const innerGlow = ctx.createRadialGradient(
     rect.x + rect.width * 0.52,
@@ -176,9 +261,9 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
     rect.y + rect.height * 0.5,
     minDim * 0.72
   );
-  innerGlow.addColorStop(0, `rgba(212, 175, 55, ${0.035 + pulse * 0.02})`);
-  innerGlow.addColorStop(0.55, "rgba(212, 175, 55, 0.015)");
-  innerGlow.addColorStop(1, "rgba(212, 175, 55, 0)");
+  innerGlow.addColorStop(0, `rgba(241, 249, 255, ${0.1 + pulse * 0.04})`);
+  innerGlow.addColorStop(0.45, `rgba(204, 231, 247, ${0.04 + pulse * 0.015})`);
+  innerGlow.addColorStop(1, "rgba(204, 231, 247, 0)");
 
   ctx.save();
   roundedRectPath(ctx, rect, radius);
@@ -188,9 +273,9 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
   ctx.fill();
 
   const borderGlow = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.width, rect.y);
-  borderGlow.addColorStop(0, `rgba(111, 143, 175, ${0.16 + pulse * 0.08})`);
-  borderGlow.addColorStop(0.5, `rgba(212, 175, 55, ${0.18 + pulse * 0.1})`);
-  borderGlow.addColorStop(1, `rgba(177, 58, 26, ${0.14 + pulse * 0.08})`);
+  borderGlow.addColorStop(0, `rgba(121, 167, 206, ${0.18 + pulse * 0.08})`);
+  borderGlow.addColorStop(0.5, `rgba(226, 205, 152, ${0.16 + pulse * 0.08})`);
+  borderGlow.addColorStop(1, `rgba(162, 132, 201, ${0.14 + pulse * 0.08})`);
 
   ctx.strokeStyle = "rgba(255,255,255,0.04)";
   ctx.lineWidth = 1;
@@ -222,8 +307,38 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
 
   ctx.clip();
 
+  const textureDrift = timeSec * 4.2;
+  drawTiledTexture(ctx, rect, ICE_TEXTURE_COLOR, {
+    alpha: 0.16,
+    tileScale: clamp(rect.width / 2048, 0.18, 0.34),
+    driftX: textureDrift * 0.65,
+    driftY: textureDrift * 0.28
+  });
+  drawTiledTexture(ctx, rect, ICE_TEXTURE_ROUGH, {
+    alpha: 0.08,
+    tileScale: clamp(rect.width / 1400, 0.22, 0.44),
+    driftX: -textureDrift * 0.42,
+    driftY: textureDrift * 0.18,
+    composite: "multiply"
+  });
+  drawTiledTexture(ctx, rect, SNOW_TEXTURE_COLOR, {
+    alpha: 0.06,
+    tileScale: clamp(rect.width / 1700, 0.2, 0.38),
+    driftX: textureDrift * 0.18,
+    driftY: -textureDrift * 0.24,
+    composite: "screen"
+  });
+
+  const iceSheen = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.height);
+  iceSheen.addColorStop(0, "rgba(255, 255, 255, 0.08)");
+  iceSheen.addColorStop(0.28, "rgba(224, 242, 255, 0.04)");
+  iceSheen.addColorStop(0.64, "rgba(173, 201, 224, 0.03)");
+  iceSheen.addColorStop(1, "rgba(118, 146, 170, 0.05)");
+  ctx.fillStyle = iceSheen;
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+
   // Low-opacity arcane tracery grid
-  ctx.strokeStyle = "rgba(207, 195, 168, 0.04)";
+  ctx.strokeStyle = "rgba(235, 246, 255, 0.055)";
   ctx.lineWidth = 1;
   for (let i = 1; i < 10; i += 1) {
     const x = rect.x + (rect.width * i) / 10;
@@ -247,7 +362,7 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
     const x = rect.x + (((Math.sin(t * 4.1) * 0.5 + 0.5) + i * 0.13) % 1) * rect.width;
     const y = rect.y + (((Math.cos(t * 3.2) * 0.5 + 0.5) + i * 0.17) % 1) * rect.height;
     const r = 1 + (i % 3);
-    ctx.fillStyle = `rgba(255,255,255,${0.03 + ((i + pulse) % 3) * 0.015})`;
+    ctx.fillStyle = `rgba(244,251,255,${0.04 + ((i + pulse) % 3) * 0.017})`;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
@@ -260,13 +375,13 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
   ctx.save();
   ctx.translate(centerX, centerY);
   ctx.rotate(timeSec * 0.06);
-  ctx.strokeStyle = `rgba(184, 171, 144, ${0.05 + pulse * 0.02})`;
+  ctx.strokeStyle = `rgba(197, 216, 232, ${0.06 + pulse * 0.025})`;
   ctx.lineWidth = 1.1;
   ctx.beginPath();
   ctx.arc(0, 0, circleR, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.strokeStyle = `rgba(255, 203, 149, ${0.07 + pulse * 0.03})`;
+  ctx.strokeStyle = `rgba(231, 220, 180, ${0.055 + pulse * 0.025})`;
   ctx.beginPath();
   ctx.arc(0, 0, circleR * 0.68, 0, Math.PI * 2);
   ctx.stroke();
@@ -282,7 +397,7 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
   }
   ctx.restore();
 
-  ctx.strokeStyle = "rgba(255, 201, 143, 0.12)";
+  ctx.strokeStyle = "rgba(224, 238, 250, 0.12)";
   ctx.lineWidth = 1.25;
   const runeR = minDim * 0.09;
   const corners: Point[] = [
@@ -311,8 +426,8 @@ export function drawPad(ctx: CanvasRenderingContext2D, rect: Rect, timeSec: numb
     centerY,
     rect.width * 0.6
   );
-  centerGlow.addColorStop(0, `rgba(212, 175, 55, ${0.02 + pulse * 0.01})`);
-  centerGlow.addColorStop(1, "rgba(212, 175, 55, 0)");
+  centerGlow.addColorStop(0, `rgba(238, 246, 255, ${0.028 + pulse * 0.012})`);
+  centerGlow.addColorStop(1, "rgba(238, 246, 255, 0)");
   ctx.fillStyle = centerGlow;
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 

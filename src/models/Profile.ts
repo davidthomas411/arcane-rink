@@ -3,7 +3,38 @@ export type StylePreset = "ARCANE" | "FROST" | "FEL";
 
 export type TrailCosmetic = "ARCANE_SPARK" | "FROST_MIST" | "FEL_FLAME";
 export type TargetSkinCosmetic = "RUNE_RING" | "ICE_SIGIL" | "SHADOW_EYE";
-export type CosmeticId = TrailCosmetic | TargetSkinCosmetic;
+export type HelmetCosmetic =
+  | "HELMET_IRON_CAGE"
+  | "HELMET_FROST_CREST"
+  | "HELMET_FEL_SPIKES"
+  | "HELMET_WARDEN_VISOR";
+export type StickCosmetic = "STICK_OAK_RUNE" | "STICK_FROSTBITE" | "STICK_EMBERMAW" | "STICK_STARFORGED";
+export type GlovesCosmetic = "GLOVES_STANDARD" | "GLOVES_FROSTBOUND" | "GLOVES_EMBERGRIP" | "GLOVES_WARDEN_PLATE";
+export type CosmeticId = TrailCosmetic | TargetSkinCosmetic | HelmetCosmetic | StickCosmetic | GlovesCosmetic;
+
+export type EquippedCosmetics = {
+  trail: TrailCosmetic;
+  targetSkin: TargetSkinCosmetic;
+  helmet: HelmetCosmetic;
+  stick: StickCosmetic;
+  gloves: GlovesCosmetic;
+};
+
+export const STARTER_COSMETICS: ReadonlyArray<CosmeticId> = [
+  "RUNE_RING",
+  "ARCANE_SPARK",
+  "HELMET_IRON_CAGE",
+  "STICK_OAK_RUNE",
+  "GLOVES_STANDARD"
+];
+
+export const DEFAULT_EQUIPPED_COSMETICS: EquippedCosmetics = {
+  trail: "ARCANE_SPARK",
+  targetSkin: "RUNE_RING",
+  helmet: "HELMET_IRON_CAGE",
+  stick: "STICK_OAK_RUNE",
+  gloves: "GLOVES_STANDARD"
+};
 
 export type ProfileStats = {
   runs: number;
@@ -25,6 +56,7 @@ export type Profile = {
   perkPoints: number;
   perks: string[];
   unlockedCosmetics: CosmeticId[];
+  equippedCosmetics: EquippedCosmetics;
   stats: ProfileStats;
   createdAtMs: number;
   updatedAtMs: number;
@@ -91,7 +123,8 @@ export function createProfile(input: {
     level: 1,
     perkPoints: 0,
     perks: [],
-    unlockedCosmetics: ["RUNE_RING", "ARCANE_SPARK"],
+    unlockedCosmetics: [...STARTER_COSMETICS],
+    equippedCosmetics: { ...DEFAULT_EQUIPPED_COSMETICS },
     stats: {
       runs: 0,
       bestScore: 0,
@@ -103,4 +136,3 @@ export function createProfile(input: {
     updatedAtMs: now
   };
 }
-

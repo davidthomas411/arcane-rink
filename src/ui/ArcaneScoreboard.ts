@@ -34,11 +34,6 @@ function createCornerBolts(): string {
       (pos) => `
         <div class="arcane-sb-bolt arcane-sb-bolt-${pos}" aria-hidden="true">
           <div class="arcane-sb-bolt-ring"></div>
-          <svg viewBox="0 0 24 24" class="arcane-sb-bolt-skull" aria-hidden="true">
-            <path d="M12 3C8.5 3 6 6 6 9c0 1.8.7 3.3 1.8 4.5V16a.8.8 0 00.8.8h.8v.8a.8.8 0 00.8.8h3.6a.8.8 0 00.8-.8v-.8h.8a.8.8 0 00.8-.8v-2.5C17.3 12.3 18 10.8 18 9c0-3-2.5-6-6-6z"></path>
-            <circle cx="10" cy="9" r="1.2"></circle>
-            <circle cx="14" cy="9" r="1.2"></circle>
-          </svg>
         </div>
       `
     )
@@ -76,7 +71,7 @@ function scoreboardHtml(variant: ArcaneScoreboardVariant): string {
         </div>
 
         <div class="arcane-scoreboard-rail">
-          <span class="arcane-sb-rail-glyph" data-value="period-rail">P1 • 1st</span>
+          <span class="arcane-sb-rail-glyph" data-value="period-rail">Period 1</span>
           <span class="arcane-sb-rail-glyph" data-value="enemy-rail">Cryptfang</span>
           <div class="arcane-sb-phase">Threat: Stable</div>
         </div>
@@ -103,10 +98,10 @@ function scoreboardHtml(variant: ArcaneScoreboardVariant): string {
                       <line x1="81.18" y1="32" x2="84.64" y2="30"></line>
                     </g>
                   </svg>
-                </div>
-                <div class="arcane-sb-time-content">
-                  <span class="arcane-sb-mini-label">Time</span>
-                  <strong class="arcane-sb-time-value" data-value="time">20:00</strong>
+                  <div class="arcane-sb-time-content">
+                    <span class="arcane-sb-mini-label">Time</span>
+                    <strong class="arcane-sb-time-value" data-value="time">20:00</strong>
+                  </div>
                 </div>
                 <div class="arcane-sb-time-meta">
                   <span data-sub="time">${isHud ? "Period clock" : "Final clock"}</span>
@@ -210,7 +205,7 @@ export function createArcaneScoreboard(variant: ArcaneScoreboardVariant): Arcane
       : "arcane-scoreboard arcane-scoreboard--results";
   root.innerHTML = scoreboardHtml(variant);
 
-  return {
+  const refs: ArcaneScoreboardRefs = {
     root,
     timerEl: requireEl<HTMLSpanElement>(root, '[data-value="time"]'),
     homeScoreEl: requireEl<HTMLSpanElement>(root, '[data-value="score-home"]'),
@@ -231,6 +226,7 @@ export function createArcaneScoreboard(variant: ArcaneScoreboardVariant): Arcane
     guestLabelEl: requireEl<HTMLSpanElement>(root, '[data-value="guest-label"]'),
     scoreLabelEl: requireEl<HTMLSpanElement>(root, '[data-value="score-label"]')
   };
+  return refs;
 }
 
 export function setArcaneScoreboardScore(refs: ArcaneScoreboardRefs, home: number, guest: number): void {

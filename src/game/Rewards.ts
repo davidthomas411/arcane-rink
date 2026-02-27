@@ -1,14 +1,33 @@
 import type { GameRunSummary } from "./Game";
-import type { CosmeticId, Profile } from "../models/Profile";
+import type { CosmeticId, EquippedCosmetics, Profile } from "../models/Profile";
 
 export const TRAIL_COSMETICS = ["ARCANE_SPARK", "FROST_MIST", "FEL_FLAME"] as const;
 export const TARGET_SKIN_COSMETICS = ["RUNE_RING", "ICE_SIGIL", "SHADOW_EYE"] as const;
+export const HELMET_COSMETICS = [
+  "HELMET_IRON_CAGE",
+  "HELMET_FROST_CREST",
+  "HELMET_FEL_SPIKES",
+  "HELMET_WARDEN_VISOR"
+] as const;
+export const STICK_COSMETICS = ["STICK_OAK_RUNE", "STICK_FROSTBITE", "STICK_EMBERMAW", "STICK_STARFORGED"] as const;
+export const GLOVES_COSMETICS = ["GLOVES_STANDARD", "GLOVES_FROSTBOUND", "GLOVES_EMBERGRIP", "GLOVES_WARDEN_PLATE"] as const;
+
+export type CosmeticSlotKey = keyof EquippedCosmetics;
 
 const COSMETIC_ORDER: CosmeticId[] = [
+  "HELMET_FROST_CREST",
   "FROST_MIST",
+  "STICK_FROSTBITE",
   "ICE_SIGIL",
+  "GLOVES_FROSTBOUND",
+  "HELMET_FEL_SPIKES",
   "FEL_FLAME",
+  "STICK_EMBERMAW",
   "SHADOW_EYE",
+  "GLOVES_EMBERGRIP",
+  "HELMET_WARDEN_VISOR",
+  "STICK_STARFORGED",
+  "GLOVES_WARDEN_PLATE",
   "ARCANE_SPARK",
   "RUNE_RING"
 ];
@@ -18,22 +37,96 @@ export type LootReward = {
   source: "level_unlock" | "run_drop";
 };
 
-export function cosmeticLabel(id: CosmeticId): string {
+export function cosmeticSlot(id: CosmeticId): CosmeticSlotKey {
+  if ((TRAIL_COSMETICS as readonly string[]).includes(id)) {
+    return "trail";
+  }
+  if ((TARGET_SKIN_COSMETICS as readonly string[]).includes(id)) {
+    return "targetSkin";
+  }
+  if ((HELMET_COSMETICS as readonly string[]).includes(id)) {
+    return "helmet";
+  }
+  if ((STICK_COSMETICS as readonly string[]).includes(id)) {
+    return "stick";
+  }
+  return "gloves";
+}
+
+export function cosmeticsForSlot(slot: CosmeticSlotKey): CosmeticId[] {
+  switch (slot) {
+    case "trail":
+      return [...TRAIL_COSMETICS];
+    case "targetSkin":
+      return [...TARGET_SKIN_COSMETICS];
+    case "helmet":
+      return [...HELMET_COSMETICS];
+    case "stick":
+      return [...STICK_COSMETICS];
+    case "gloves":
+      return [...GLOVES_COSMETICS];
+    default:
+      return [];
+  }
+}
+
+export function cosmeticShortLabel(id: CosmeticId): string {
   switch (id) {
     case "ARCANE_SPARK":
-      return "Trail: Arcane Spark";
+      return "Arcane Spark";
     case "FROST_MIST":
-      return "Trail: Frost Mist";
+      return "Frost Mist";
     case "FEL_FLAME":
-      return "Trail: Fel Flame";
+      return "Fel Flame";
     case "RUNE_RING":
-      return "Target Skin: Rune Ring";
+      return "Rune Ring";
     case "ICE_SIGIL":
-      return "Target Skin: Ice Sigil";
+      return "Ice Sigil";
     case "SHADOW_EYE":
-      return "Target Skin: Shadow Eye";
+      return "Shadow Eye";
+    case "HELMET_IRON_CAGE":
+      return "Iron Cage";
+    case "HELMET_FROST_CREST":
+      return "Frost Crest";
+    case "HELMET_FEL_SPIKES":
+      return "Fel Spikes";
+    case "HELMET_WARDEN_VISOR":
+      return "Warden Visor";
+    case "STICK_OAK_RUNE":
+      return "Oak Rune";
+    case "STICK_FROSTBITE":
+      return "Frostbite";
+    case "STICK_EMBERMAW":
+      return "Embermaw";
+    case "STICK_STARFORGED":
+      return "Starforged";
+    case "GLOVES_STANDARD":
+      return "Standard Gloves";
+    case "GLOVES_FROSTBOUND":
+      return "Frostbound";
+    case "GLOVES_EMBERGRIP":
+      return "Embergrip";
+    case "GLOVES_WARDEN_PLATE":
+      return "Warden Plate";
     default:
       return id;
+  }
+}
+
+export function cosmeticLabel(id: CosmeticId): string {
+  switch (cosmeticSlot(id)) {
+    case "trail":
+      return `Trail: ${cosmeticShortLabel(id)}`;
+    case "targetSkin":
+      return `Gate Skin: ${cosmeticShortLabel(id)}`;
+    case "helmet":
+      return `Helmet: ${cosmeticShortLabel(id)}`;
+    case "stick":
+      return `Stick: ${cosmeticShortLabel(id)}`;
+    case "gloves":
+      return `Gloves: ${cosmeticShortLabel(id)}`;
+    default:
+      return cosmeticShortLabel(id);
   }
 }
 
@@ -119,4 +212,3 @@ export function applyLootRewards(profile: Profile, rewards: LootReward[]): Profi
     unlockedCosmetics: [...nextUnlocked]
   };
 }
-
