@@ -2558,7 +2558,10 @@ export class RuneGatesHUD {
     this.crackPropagationCueLastAtMs = now;
     this.duckBackgroundMusic(120);
 
-    const windowWithWebkitAudio = window as Window & { webkitAudioContext?: typeof AudioContext };
+    const windowWithWebkitAudio = window as unknown as {
+      AudioContext?: typeof AudioContext;
+      webkitAudioContext?: typeof AudioContext;
+    };
     const AudioContextCtor = windowWithWebkitAudio.AudioContext ?? windowWithWebkitAudio.webkitAudioContext;
     if (!AudioContextCtor) {
       this.playPuckHitSfx(clamp(0.64 + intensity * 0.16, 0.6, 1));
