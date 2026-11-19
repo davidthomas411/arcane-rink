@@ -54,6 +54,30 @@ Not built yet: stick detection (the avatar's stick is inferred from hand positio
 only when the server sends 3D joints), a league or season, player advancement between
 matches, a second human coach, and more creature art.
 
+## 1c. Then: real-time hockey with the player as the skater
+
+Next feedback: use full body tracking for the main player (a few poses a second is
+responsive enough), drop the dice so the avatar is driven directly, and make the rink
+much bigger. That is **Play hockey** (`src/rush/`).
+
+- **Big rink, small floor.** The rink is 26 × 60 m. The player's floor is a patch that
+  rides along with their skater, so the puck's place on the floor is its place at the
+  skater's feet. Averaged over half a second, that offset also steers: forward is faster,
+  sideways drifts. Quick dribbles average out, so stickhandling does not jerk the skater about.
+- **Dekes are real.** A defender winds up a poke-check at where the puck is; a red ring
+  marks the spot. Move the puck out of it in time or lose it.
+- **Passing is real.** A pass off a side rebounder sends the puck to a winger. The puck
+  really does come back off the rebounder; catching it clean is the return pass.
+- **Shooting is real.** In their zone, a pass off the far rebounder is a shot, and which
+  end of the rebounder it strikes picks the corner. The goalie leans toward the puck's side.
+- **The skater is the player.** With the body server connected, the tracked mesh stands on
+  the rink in place of the built-in figure. It is updated a few times a second and blended
+  between poses. Without the server, the built-in figure's stick still follows the real puck.
+
+Simplifications in this first cut: after a turnover there is a puck battle rather than a
+full goblin rush to defend; no offside or line changes; wingers hold formation rather
+than reading the play; one human skater.
+
 ## 2. The core idea
 
 **The floor is blank. Everything the player needs to know is on the TV.**

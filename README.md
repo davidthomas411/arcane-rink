@@ -2,24 +2,37 @@
 
 A fantasy hockey game you play with a real stick and puck on a basement floor.
 
-**The match** is a turn-based fantasy hockey game in 3D, in the spirit of tabletop
-fantasy sports: you coach a team of skaters against a goblin team on a rink of squares.
-Every risky play (a deke, a pass, a shot, a body check, a faceoff) needs a dice roll,
-and **the dice roll is a real drill**: a few seconds of stickhandling or passing, with
-the die face climbing as you do it. Fail a roll and it is a turnover.
+There are three ways to play, all driven by the same puck tracking:
 
-An overhead camera tracks a Green Biscuit puck. On the rink screen the puck is your
-cursor; in a drill it is the puck. An optional second camera and a body-tracking server
-put the player on screen as a 3D figure and add +1 to the roll for keeping the head up.
+**Play hockey (real-time).** You are a skater on a full-size 3D rink, seen from behind.
+Your patch of floor rides along with your skater: where the real puck sits on the floor
+is where it sits at your skater's feet, and it steers.
 
-![The 3D rink: your skaters against the goblins](docs/img/match-board.jpg)
+| Do this with the real puck | In the game |
+| --- | --- |
+| Push it forward / pull it back | Skate faster / slower |
+| Carry it left or right | Drift that way |
+| Move it out of the red ring in time | Deke the goblin's poke-check |
+| Pass off a **side** rebounder | Pass to a winger. Catch the rebound clean and you get it back: give-and-go |
+| Pass off the **far** rebounder, in their zone | Shoot. Hit the left or right end of the rebounder to pick your corner |
+| Lose it? | Puck battle: 8 quick dribbles to win it back before they break away |
 
-![A skill check: pass off the rebounder and catch it clean to earn the roll](docs/img/match-drill.jpg)
+Your skater is a built-in figure by default, and becomes **your tracked body** when the
+body-tracking server is connected. Two 2½-minute periods.
+
+**Coach a match (turn-based).** A fantasy sports board game in 3D: you coach four skaters
+against the goblins on a rink of squares, and every dice roll (deke, pass, shot, body
+check, faceoff) is earned with a few seconds of a real drill.
+
+**Training quests.** Top-down fights against goblins that swing, charge, block and cast.
+
+![Playing hockey: behind your skater on the full rink](docs/img/rush.jpg)
+
+![Coaching a match: the 3D board](docs/img/match-board.jpg)
 
 Built with Vite, TypeScript and three.js. Works offline apart from the optional body tracker.
 
 - **Design, plan and what is tested:** [docs/REALM_PLAN.md](docs/REALM_PLAN.md)
-- **Training quests** (real-time fights against goblins using the same moves) are on the first screen too.
 - **Original shooting-pad prototype:** still available at `/legacy.html`
 
 ## Run it
@@ -57,7 +70,7 @@ plugged into the TV and the camera is the simplest setup.
 
 No camera handy? **Save · play with mouse** and the pointer stands in for the puck.
 
-## How a match plays
+## How a coached match plays
 
 - Your team: Playmaker, Sniper, Enforcer, Defender. The kids' heroes are the first skaters, with their portraits.
 - Each turn, three of your skaters may act. Slide the puck on the floor to move the
@@ -93,8 +106,9 @@ This uses the Fast SAM 3D Body webcam server from the `3d-mesh-demo-webcam` repo
 4. In the game: **Body tracking setup**, pick that camera, **Connect**, stand in view,
    look at the TV and press **I'm looking at the TV now**.
 
-What you get: the player's body mesh as a 3D figure during the match, and +1 on any
-roll where the head stayed up for 70% of the drill. The server sends about 7 poses a
+What you get: in **Play hockey** your body mesh is the skater on the rink; in a coached
+match it is shown beside the die, and +1 is added to any roll where the head stayed up
+for 70% of the drill. The server sends about 7 poses a
 second, roughly 150 ms behind, which is why it drives the avatar and posture rather than fast play.
 
 No GPU handy? `node tools/mock-body-server.mjs` stands in with a simple animated figure.
@@ -112,7 +126,7 @@ fast cut dashes through, a loop freezes, and a pass calls lightning. See the pla
 ## Status
 
 Verified here: automated tests of the match rules, drills, tracker and quest engine;
-a scripted coach playing whole matches in a real browser; the puck camera against a
+scripted players completing the real-time game, coached matches and quests in a real browser; the puck camera against a
 synthetic video; the body-tracking client against the stand-in server.
 
 Not yet tried: a real camera, a real puck, the real body-tracking server, or real kids.

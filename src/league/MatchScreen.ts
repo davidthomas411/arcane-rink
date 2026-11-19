@@ -36,7 +36,7 @@ function sleep(ms: number): Promise<void> {
  * A puck source the screen can steer itself: used for the watch-it-play demo,
  * where a scripted coach picks squares and performs the drills.
  */
-class GuidedPuck implements PuckSource {
+export class GuidedPuck implements PuckSource {
   readonly label = "Demo player";
   readonly sample: PuckSample;
   goal = { x: 0, y: 0, speed: 0 };

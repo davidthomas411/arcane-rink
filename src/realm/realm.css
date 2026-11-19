@@ -1345,3 +1345,33 @@ select {
   border-radius: 8px;
   background: radial-gradient(circle at 50% 70%, rgba(30, 50, 70, 0.85), rgba(8, 9, 12, 0.9));
 }
+
+/* --------------------------------------------------------- real-time rush */
+.rush-floor {
+  position: absolute;
+  left: 18px;
+  bottom: clamp(110px, 14vh, 150px);
+  width: clamp(170px, 17vw, 300px);
+  aspect-ratio: 10 / 7.6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  opacity: 0.92;
+}
+
+.rush-floor-canvas {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: block;
+}
+
+.rush-map {
+  position: absolute;
+  right: 18px;
+  top: clamp(110px, 16vh, 170px);
+  width: clamp(70px, 6.5vw, 120px);
+  height: auto;
+  pointer-events: none;
+}

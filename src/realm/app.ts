@@ -27,6 +27,7 @@ import { escapeHtml, makeRng } from "./util";
 import { BodySetupScreen } from "../league/body/BodySetupScreen";
 import { BodyTracker } from "../league/body/BodyTracker";
 import { MatchScreen, type MatchResult } from "../league/MatchScreen";
+import { RushScreen } from "../rush/RushScreen";
 import { grantSkill, grantXp } from "./game/save";
 
 const FPS_TO_MPH = 0.6818;
@@ -150,7 +151,8 @@ export class RealmApp {
             <button class="btn" data-act="mute" type="button">Sound: ${isMuted() ? "off" : "on"}</button>
             <a class="btn" href="legacy.html">Original shooting-pad game</a>
           </div>
-          <button class="btn btn-primary btn-big" data-act="match" type="button" ${party.length === 0 ? "disabled" : ""}>Play a match →</button>
+          <button class="btn btn-primary btn-big" data-act="rush" type="button" ${party.length === 0 ? "disabled" : ""}>Play hockey →</button>
+          <button class="btn btn-big btn-second" data-act="match" type="button" ${party.length === 0 ? "disabled" : ""}>Coach a match (turn-based)</button>
           <button class="btn btn-big btn-second" data-act="enter" type="button" ${party.length === 0 ? "disabled" : ""}>Training quests</button>
           ${party.length === 0 ? `<p class="hint">Create a hero and add them to the party to begin.</p>` : `<p class="hint">Party: ${party.map((h) => escapeHtml(h.name)).join(", ")}</p>`}
         </aside>
@@ -198,6 +200,9 @@ export class RealmApp {
           break;
         case "enter":
           this.showMap();
+          break;
+        case "rush":
+          void this.startMatch(true);
           break;
         case "match":
           void this.startMatch();
@@ -456,7 +461,10 @@ export class RealmApp {
 
   // ----------------------------------------------------------------- match
 
-  private async startMatch(): Promise<void> {
+  private lastWasRush = false;
+
+  private async startMatch(rush = false): Promise<void> {
+    this.lastWasRush = rush;
     const heroes = partyHeroes(this.save);
     if (heroes.length === 0) return;
     if (!this.demo && this.cal.input === "camera" && !this.cameraRunning) {
@@ -470,6 +478,19 @@ export class RealmApp {
       }
     }
     const cal = this.cal;
+    const puckSource = (toArena: (cx: number, cy: number) => { x: number; y: number }) => {
+      if (cal.input === "camera") {
+        const tracker = this.getTracker();
+        tracker.color = cal.color;
+        return new CameraSource(tracker, cal);
+      }
+      return new MouseSource(toArena, cal.arenaW, cal.arenaD);
+    };
+    if (rush) {
+      // Real-time: the first hero in the party is the skater.
+      new RushScreen(this.root, { hero: heroes[0]!, cal, demo: this.demo, body: this.body, makeSource: puckSource, onEnd: (result) => this.showMatchResult(result) });
+      return;
+    }
     new MatchScreen(this.root, {
       heroes,
       cal,
@@ -519,7 +540,7 @@ export class RealmApp {
           <h3>${escapeHtml(hero.name)}</h3>
           ${xp ? `<p class="xp">+${xp} XP</p>` : ""}
           ${levels.length ? `<p class="level-up">LEVEL UP! Now level ${levels[levels.length - 1]}</p>` : ""}
-          <p>Skill checks made: <b>${entry.made} of ${entry.checks}</b></p>
+          <p>Plays made: <b>${entry.made} of ${entry.checks}</b></p>
           <p class="tiny">${practice.touches} dribble touches · ${practice.passes} passes · ${practice.receptions} clean catches${practice.topPassSpeed > 0 ? ` · hardest ${(practice.topPassSpeed * FPS_TO_MPH).toFixed(1)} mph` : ""}</p>
         </article>`;
       })
@@ -529,7 +550,7 @@ export class RealmApp {
       `
       <header class="screen-head">
         <div><h1>${outcome}</h1><p class="lede">The Puckbound ${us} – ${them} Cryptfang Goblins</p>
-        ${demo ? `<p class="notice">Demo match — played by the scripted coach, so nothing was saved.</p>` : ""}</div>
+        ${demo ? `<p class="notice">Demo match — played by the scripted player, so nothing was saved.</p>` : ""}</div>
       </header>
       <div class="rewards">${cards}</div>
       ${result.headsUp !== null ? `<p class="lede">Head up for ${Math.round(result.headsUp * 100)}% of drill time.</p>` : ""}
@@ -542,7 +563,7 @@ export class RealmApp {
     el.addEventListener("click", (event) => {
       const act = (event.target as HTMLElement).closest<HTMLElement>("[data-act]")?.dataset.act;
       if (act === "home") this.showTavern();
-      else if (act === "again") void this.startMatch();
+      else if (act === "again") void this.startMatch(this.lastWasRush);
     });
   }
 
