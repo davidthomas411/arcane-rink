@@ -23,6 +23,9 @@ export type Calibration = {
   /** True once someone has walked through camera setup. */
   cameraReady: boolean;
   input: "mouse" | "camera";
+  /** Address of the body-tracking server and the camera that faces the player. */
+  bodyAddress: string;
+  bodyDeviceId: string | null;
 };
 
 const KEY = "arcane-rink/realm-calibration.v1";
@@ -56,7 +59,9 @@ export function defaultCalibration(): Calibration {
     rebounders: defaultRebounders(arenaW, arenaD),
     deviceId: null,
     cameraReady: false,
-    input: "mouse"
+    input: "mouse",
+    bodyAddress: "/body",
+    bodyDeviceId: null
   };
 }
 
@@ -100,7 +105,9 @@ export function loadCalibration(storage: Storage = window.localStorage): Calibra
       rebounders,
       deviceId: typeof data.deviceId === "string" ? data.deviceId : null,
       cameraReady: data.cameraReady === true,
-      input: data.input === "camera" ? "camera" : "mouse"
+      input: data.input === "camera" ? "camera" : "mouse",
+      bodyAddress: typeof data.bodyAddress === "string" && data.bodyAddress ? data.bodyAddress : base.bodyAddress,
+      bodyDeviceId: typeof data.bodyDeviceId === "string" ? data.bodyDeviceId : null
     };
   } catch {
     return base;

@@ -22,6 +22,38 @@ What held it back:
 
 The original game still runs, untouched apart from the build fix, at `/legacy.html`.
 
+## 1b. Where the design went next: a hockey match
+
+Feedback on the quest game was that it still was not a hockey game. The answer is a
+**turn-based fantasy hockey match in 3D** where each dice roll is a real drill.
+
+Why turn-based rather than real-time:
+
+- The body tracker returns about 7 poses a second, about 150 ms late. That is fine for
+  an avatar and for judging posture, and too slow to steer fast action.
+- A kid on a 10 × 7 ft floor cannot skate a rink, but can coach one and perform its key moments.
+- Turns give natural rest, let siblings tag in, and make every rep matter: a failed roll is a turnover.
+
+How the pieces of existing work are used:
+
+| Existing piece | Role in the match |
+| --- | --- |
+| Overhead puck tracking | Cursor on the rink (hold on a square to choose); the puck in drills |
+| Stickhandling and pass recognition | The drills that produce each roll |
+| Rebounders | Pass and shot rolls |
+| Fast SAM 3D Body server | The player as a 3D figure; head-up bonus on rolls; knee bend readout |
+| Original art, sounds, style | Standee pieces, rink, scoreboard |
+
+Rules in brief (`src/league/rules.ts`): 11 × 7 rink; four skaters a side with move,
+strength, agility, passing and shooting numbers; three activations a turn; leaving a
+square next to an opponent needs a deke; passes, shots and checks roll against a target
+with modifiers for range, angle and pressure; a failed deke, pass or shot is a turnover;
+knocked-down skaters miss a turn; two periods; faceoffs after goals and at each period.
+
+Not built yet: stick detection (the avatar's stick is inferred from hand positions, and
+only when the server sends 3D joints), a league or season, player advancement between
+matches, a second human coach, and more creature art.
+
 ## 2. The core idea
 
 **The floor is blank. Everything the player needs to know is on the TV.**

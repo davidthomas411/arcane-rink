@@ -24,6 +24,10 @@ import { MouseSource } from "./input/MouseSource";
 import { CalibrationScreen } from "./ui/CalibrationScreen";
 import { HERO_PORTRAITS, PlaySession, type SessionResult } from "./ui/PlaySession";
 import { escapeHtml, makeRng } from "./util";
+import { BodySetupScreen } from "../league/body/BodySetupScreen";
+import { BodyTracker } from "../league/body/BodyTracker";
+import { MatchScreen, type MatchResult } from "../league/MatchScreen";
+import { grantSkill, grantXp } from "./game/save";
 
 const FPS_TO_MPH = 0.6818;
 const SKILLS: readonly SkillId[] = ["stick", "pass", "aware"];
@@ -52,6 +56,8 @@ export class RealmApp {
   private notice = "";
   /** Demo mode: a scripted player handles the puck so the game can be watched. Nothing is saved. */
   private demo = false;
+  private readonly body = new BodyTracker();
+  private quickMatch = false;
 
   constructor(private readonly root: HTMLElement) {
     this.save = loadSave();
@@ -133,15 +139,19 @@ export class RealmApp {
             <dt>Puck tracking</dt><dd>${this.demo ? "Demo player" : camera ? "Overhead camera" : "Mouse (desk practice)"}</dd>
             <dt>Floor</dt><dd>${this.cal.arenaW} × ${this.cal.arenaD} ft</dd>
             <dt>Rebounders</dt><dd>${this.cal.rebounders.length || "none — pass quests become carries"}</dd>
+            <dt>Body tracking</dt><dd>${this.body.active ? "connected" : "off"}</dd>
           </dl>
           <div class="col">
             <button class="btn" data-act="calibrate" type="button">Camera &amp; floor setup</button>
+            <button class="btn" data-act="body" type="button">Body tracking setup</button>
+            <button class="btn" data-act="length" type="button">Match length: ${this.quickMatch ? "quick (about 6 min)" : "full (about 12 min)"}</button>
             ${this.cal.cameraReady ? `<button class="btn" data-act="toggle-input" type="button">Switch to ${camera ? "mouse" : "camera"}</button>` : ""}
             <button class="btn${this.demo ? " is-on" : ""}" data-act="demo" type="button">Watch it play itself: ${this.demo ? "on" : "off"}</button>
             <button class="btn" data-act="mute" type="button">Sound: ${isMuted() ? "off" : "on"}</button>
             <a class="btn" href="legacy.html">Original shooting-pad game</a>
           </div>
-          <button class="btn btn-primary btn-big" data-act="enter" type="button" ${party.length === 0 ? "disabled" : ""}>Enter the world →</button>
+          <button class="btn btn-primary btn-big" data-act="match" type="button" ${party.length === 0 ? "disabled" : ""}>Play a match →</button>
+          <button class="btn btn-big btn-second" data-act="enter" type="button" ${party.length === 0 ? "disabled" : ""}>Training quests</button>
           ${party.length === 0 ? `<p class="hint">Create a hero and add them to the party to begin.</p>` : `<p class="hint">Party: ${party.map((h) => escapeHtml(h.name)).join(", ")}</p>`}
         </aside>
       </div>`,
@@ -188,6 +198,21 @@ export class RealmApp {
           break;
         case "enter":
           this.showMap();
+          break;
+        case "match":
+          void this.startMatch();
+          break;
+        case "length":
+          this.quickMatch = !this.quickMatch;
+          this.showTavern();
+          break;
+        case "body":
+          new BodySetupScreen(this.root, this.body, { address: this.cal.bodyAddress, deviceId: this.cal.bodyDeviceId }, (settings) => {
+            this.cal.bodyAddress = settings.address;
+            this.cal.bodyDeviceId = settings.deviceId;
+            saveCalibration(this.cal);
+            this.showTavern();
+          });
           break;
       }
     });
@@ -426,6 +451,98 @@ export class RealmApp {
         this.session = null;
         this.showResults(result);
       }
+    });
+  }
+
+  // ----------------------------------------------------------------- match
+
+  private async startMatch(): Promise<void> {
+    const heroes = partyHeroes(this.save);
+    if (heroes.length === 0) return;
+    if (!this.demo && this.cal.input === "camera" && !this.cameraRunning) {
+      try {
+        await this.getTracker().start(this.cal.deviceId);
+        this.cameraRunning = true;
+      } catch (error) {
+        this.notice = `Camera could not start (${error instanceof Error ? error.message : String(error)}). Open Camera & floor setup, or switch to mouse.`;
+        this.showTavern();
+        return;
+      }
+    }
+    const cal = this.cal;
+    new MatchScreen(this.root, {
+      heroes,
+      cal,
+      demo: this.demo,
+      turns: this.quickMatch ? 3 : 5,
+      body: this.body,
+      makeSource: (toArena) => {
+        if (cal.input === "camera") {
+          const tracker = this.getTracker();
+          tracker.color = cal.color;
+          return new CameraSource(tracker, cal);
+        }
+        return new MouseSource(toArena, cal.arenaW, cal.arenaD);
+      },
+      onEnd: (result) => this.showMatchResult(result)
+    });
+  }
+
+  private showMatchResult(result: MatchResult): void {
+    const [us, them] = result.score;
+    const outcome = !result.completed ? "Match abandoned" : us > them ? "Victory!" : us === them ? "Draw" : "Defeat";
+    const demo = this.demo;
+    const cards = result.heroes
+      .map((entry) => {
+        const { hero, practice } = entry;
+        const cls = CLASSES[hero.classId];
+        let xp = 0;
+        let levels: number[] = [];
+        if (!demo) {
+          // Practice always counts; XP needs a finished match.
+          hero.stats.touches += practice.touches;
+          hero.stats.passes += practice.passes;
+          hero.stats.receptions += practice.receptions;
+          hero.stats.topPassSpeed = Math.max(hero.stats.topPassSpeed, practice.topPassSpeed);
+          hero.stats.distanceFt += practice.distanceFt;
+          hero.stats.seconds += result.seconds / result.heroes.length;
+          grantSkill(hero, "stick", practice.touches * 0.6);
+          grantSkill(hero, "pass", practice.passes * 4);
+          if (result.headsUp !== null) grantSkill(hero, "aware", result.headsUp * 40);
+          if (result.completed) {
+            xp = (us > them ? 160 : us === them ? 110 : 70) + us * 25 + entry.made * 10;
+            levels = grantXp(hero, xp);
+          }
+        }
+        return `
+        <article class="reward" style="--class:${cls.color}">
+          <h3>${escapeHtml(hero.name)}</h3>
+          ${xp ? `<p class="xp">+${xp} XP</p>` : ""}
+          ${levels.length ? `<p class="level-up">LEVEL UP! Now level ${levels[levels.length - 1]}</p>` : ""}
+          <p>Skill checks made: <b>${entry.made} of ${entry.checks}</b></p>
+          <p class="tiny">${practice.touches} dribble touches · ${practice.passes} passes · ${practice.receptions} clean catches${practice.topPassSpeed > 0 ? ` · hardest ${(practice.topPassSpeed * FPS_TO_MPH).toFixed(1)} mph` : ""}</p>
+        </article>`;
+      })
+      .join("");
+    if (!demo) this.commit();
+    const el = this.screen(
+      `
+      <header class="screen-head">
+        <div><h1>${outcome}</h1><p class="lede">The Puckbound ${us} – ${them} Cryptfang Goblins</p>
+        ${demo ? `<p class="notice">Demo match — played by the scripted coach, so nothing was saved.</p>` : ""}</div>
+      </header>
+      <div class="rewards">${cards}</div>
+      ${result.headsUp !== null ? `<p class="lede">Head up for ${Math.round(result.headsUp * 100)}% of drill time.</p>` : ""}
+      <div class="row row-center">
+        <button class="btn" data-act="home" type="button">Back</button>
+        <button class="btn btn-primary" data-act="again" type="button">Play again</button>
+      </div>`,
+      "results"
+    );
+    el.addEventListener("click", (event) => {
+      const act = (event.target as HTMLElement).closest<HTMLElement>("[data-act]")?.dataset.act;
+      if (act === "home") this.showTavern();
+      else if (act === "again") void this.startMatch();
     });
   }
 

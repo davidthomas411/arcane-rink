@@ -1,0 +1,45 @@
+diff --git a/webcam_server.py b/webcam_server.py
+index 053f1f8..76d9a70 100644
+--- a/webcam_server.py
++++ b/webcam_server.py
+@@ -209,6 +209,13 @@ def inference_worker():
+                     "queue_wait_ms": queue_wait_ms,
+                     "decode_ms": decode_ms,
+                     "pred_keypoints_2d": to_numpy(outputs[0]["pred_keypoints_2d"]),
++                    # Optional: 3D joints, for clients that drive an avatar or
++                    # read posture (for example the Arcane Rink hockey game).
++                    "pred_keypoints_3d": (
++                        to_numpy(outputs[0]["pred_keypoints_3d"])
++                        if "pred_keypoints_3d" in outputs[0]
++                        else None
++                    ),
+                     "pred_cam_t": to_numpy(outputs[0]["pred_cam_t"]).reshape(-1),
+                     "focal_length": focal_length,
+                     "client_timestamp_ms": client_timestamp_ms,
+@@ -229,6 +236,14 @@ def inference_worker():
+             print(f"INFERENCE_ERROR: {last_error}", flush=True)
+ 
+ 
++@app.after_request
++def allow_cross_origin(response):
++    # Lets a page served from another local port (for example a game
++    # running on its own dev server) fetch /topology and /status.
++    response.headers.setdefault("Access-Control-Allow-Origin", "*")
++    return response
++
++
+ @app.get("/")
+ def index():
+     return send_from_directory(".", "webcam.html")
+@@ -513,6 +528,11 @@ def stream_socket(ws):
+                 "inference_ms": inference_seconds * 1000,
+                 "capture_timestamp_ms": current["client_timestamp_ms"],
+                 "pred_keypoints_2d": current["pred_keypoints_2d"].tolist(),
++                "pred_keypoints_3d": (
++                    current["pred_keypoints_3d"].tolist()
++                    if current.get("pred_keypoints_3d") is not None
++                    else None
++                ),
+                 "pred_cam_t": current["pred_cam_t"].tolist(),
+                 "focal_length": current["focal_length"],
+                 "inference_mode": runtime_config["inference_mode"],

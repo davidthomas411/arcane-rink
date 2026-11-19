@@ -83,11 +83,11 @@ export class ArenaRenderer {
     return { x: (clientX - rect.left - this.ox) / this.scale, y: (clientY - rect.top - this.oy) / this.scale };
   }
 
-  private px(x: number): number {
+  px(x: number): number {
     return this.ox + x * this.scale;
   }
 
-  private py(y: number): number {
+  py(y: number): number {
     return this.oy + y * this.scale;
   }
 
@@ -159,6 +159,10 @@ export class ArenaRenderer {
     encounter: Encounter | null;
     ready: ReadyCircle | null;
     banner: string | null;
+    /** Extra floor markings (skill-check drills draw their pads through this). */
+    overlay?: (g: ArenaRenderer) => void;
+    /** Light the rebounders up as the thing to pass at. */
+    charged?: boolean;
   }): void {
     const { ctx } = this;
     const { time, puck, encounter } = opts;
@@ -179,8 +183,9 @@ export class ArenaRenderer {
 
     this.drawFloor();
 
-    const needsBolt = encounter ? encounter.alive.some((e) => e.kind === "totem" || e.warded || e.only === "bolt") : false;
+    const needsBolt = opts.charged ?? (encounter ? encounter.alive.some((e) => e.kind === "totem" || e.warded || e.only === "bolt") : false);
     for (const reb of opts.rebounders) this.drawCrystals(reb, needsBolt, time);
+    opts.overlay?.(this);
 
     if (encounter) {
       this.drawTelegraphs(encounter);
@@ -258,7 +263,7 @@ export class ArenaRenderer {
     }
   }
 
-  private text(value: string, x: number, y: number, size: number, color: string): void {
+  text(value: string, x: number, y: number, size: number, color: string): void {
     const { ctx } = this;
     ctx.font = `700 ${Math.max(12, Math.round(size))}px ${FONT}`;
     ctx.lineWidth = Math.max(3, size * 0.18);
@@ -266,6 +271,26 @@ export class ArenaRenderer {
     ctx.strokeText(value, this.px(x), this.py(y));
     ctx.fillStyle = color;
     ctx.fillText(value, this.px(x), this.py(y));
+  }
+
+  /** A round target on the ice. */
+  pad(x: number, y: number, r: number, active: boolean, time: number): void {
+    const { ctx } = this;
+    const s = this.scale;
+    const pulse = 0.5 + 0.5 * Math.sin(time * 7);
+    const g = ctx.createRadialGradient(this.px(x), this.py(y), 0, this.px(x), this.py(y), r * s);
+    g.addColorStop(0, active ? `rgba(255,236,150,${0.55 + pulse * 0.3})` : "rgba(200,210,220,0.12)");
+    g.addColorStop(1, active ? "rgba(255,190,60,0.15)" : "rgba(200,210,220,0.04)");
+    ctx.beginPath();
+    ctx.arc(this.px(x), this.py(y), r * s, 0, TAU);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = active ? 5 : 2;
+    ctx.strokeStyle = active ? "#ffd75a" : "rgba(220,220,220,0.4)";
+    ctx.shadowColor = "#ffd75a";
+    ctx.shadowBlur = active ? 18 : 0;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
   }
 
   // ------------------------------------------------------------------ floor

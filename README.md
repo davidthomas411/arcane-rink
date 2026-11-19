@@ -1,14 +1,25 @@
 # Arcane Rink: Realm of the Puckbound
 
-A Warcraft-style hockey practice game for a basement floor. An overhead camera tracks a
-Green Biscuit puck; the TV shows a top-down map of the floor with quests, bosses and
-dangers that exist only on screen. To play, you have to look up.
+A fantasy hockey game you play with a real stick and puck on a basement floor.
 
-Built with Vite + TypeScript. No server, no accounts, works offline.
+**The match** is a turn-based fantasy hockey game in 3D, in the spirit of tabletop
+fantasy sports: you coach a team of skaters against a goblin team on a rink of squares.
+Every risky play (a deke, a pass, a shot, a body check, a faceoff) needs a dice roll,
+and **the dice roll is a real drill**: a few seconds of stickhandling or passing, with
+the die face climbing as you do it. Fail a roll and it is a turnover.
 
-![A boss fight: the goblin boss throws bombs while the hero puck works in behind him](docs/img/boss-fight.jpg)
+An overhead camera tracks a Green Biscuit puck. On the rink screen the puck is your
+cursor; in a drill it is the puck. An optional second camera and a body-tracking server
+put the player on screen as a 3D figure and add +1 to the roll for keeping the head up.
 
-- **Plan, design and review of the first draft:** [docs/REALM_PLAN.md](docs/REALM_PLAN.md)
+![The 3D rink: your skaters against the goblins](docs/img/match-board.jpg)
+
+![A skill check: pass off the rebounder and catch it clean to earn the roll](docs/img/match-drill.jpg)
+
+Built with Vite, TypeScript and three.js. Works offline apart from the optional body tracker.
+
+- **Design, plan and what is tested:** [docs/REALM_PLAN.md](docs/REALM_PLAN.md)
+- **Training quests** (real-time fights against goblins using the same moves) are on the first screen too.
 - **Original shooting-pad prototype:** still available at `/legacy.html`
 
 ## Run it
@@ -46,40 +57,63 @@ plugged into the TV and the camera is the simplest setup.
 
 No camera handy? **Save · play with mouse** and the pointer stands in for the puck.
 
-## How it plays
+## How a match plays
 
-The puck is your hero. Creatures on the TV turn to face it, wind up and attack, and how
-you handle the puck decides what your hero does:
+- Your team: Playmaker, Sniper, Enforcer, Defender. The kids' heroes are the first skaters, with their portraits.
+- Each turn, three of your skaters may act. Slide the puck on the floor to move the
+  cursor on the rink, and **hold it on a square** to choose it (a mouse click works too).
+- Green squares: skate there. Amber: skate there, but you start next to a goblin, so you
+  must roll a **deke**. Blue teammate: **pass**. Red goblin: **body check**. Gold net: **shoot**.
+- Each roll shows the number needed. Then the drill starts and the die climbs from 1 as you perform:
 
-| Do this with the puck | Your hero does this |
+| Roll | Drill |
 | --- | --- |
-| Quick dribbles beside an enemy | Strikes it (harder from behind) |
-| Wide dribbles | Cleaves everything in reach |
-| Cut fast straight through an enemy | Dashes through it |
-| Draw a loop around enemies | Freezes and damages all inside |
-| Pass off a rebounder | Calls lightning: stuns, breaks shields and wards |
+| Deke | Dribble pad to pad as fast as you can |
+| Body check | Wide, hard dribbles to build power |
+| Pass | Pass off a rebounder and catch it clean |
+| Shot | Rip it off a rebounder, hard and quick |
+| Faceoff / Save | Wait for the drop, then get the puck to the rune first |
 
-- Grunts swing at a red cone in front of them. Berserkers charge down a lane and stun
-  themselves if they miss. Brutes block from the front. Shamans cast from range. Totems
-  heal and only lightning hurts them. Wisps swarm. Bosses do all of it.
-- **Quests** teach one enemy each. **Defend** quests have raiders coming at a ward from
-  every side. **Dungeons** end in a boss. The **raid** is one long boss fight in shifts.
-- Each kid creates a **hero** with a class and a challenge tier, so different ages can
-  share a party. In dungeons and raids the game calls **TAG IN** every 40–45 seconds.
-- Knocked down? Ten quick dribbles and you are back up.
-- **The Five-Minute Vigil** is the daily routine with a streak counter.
-- After each run a **practice report** shows touches, passes, clean catches, hardest pass
-  and heads-up reactions.
+- A failed deke, pass or shot is a **turnover**: the goblins take over.
+- When the goblins shoot, you get a **save** drill to take one off their roll.
+- With more than one hero in the party, the game calls **TAG IN** each turn.
+- Two periods. Choose a quick match (about 6 minutes) or a full one (about 12).
 
-![Defending the ward stone from raiders](docs/img/defend.jpg)
+Want to see it first? Turn on **Watch it play itself** and press **Play a match**.
 
-Controls during play: `Space` skips the start circle, `P` pauses, `Esc` leaves.
+## Body tracking (optional)
 
-Want to see it before setting up? Turn on **Watch it play itself** on the first screen
-and start any quest: a scripted player handles the puck.
+This uses the Fast SAM 3D Body webcam server from the `3d-mesh-demo-webcam` repo.
+
+1. Start that server on the GPU machine and forward its port as usual.
+2. Start the game with the server's address: `BODY_SERVER=http://localhost:8098 npm run dev`
+   (that address is the default). The game reaches it through its own `/body` path, so
+   the server needs no changes.
+3. Point a **second camera at the player** (on the TV works well). The overhead puck camera cannot see a body.
+4. In the game: **Body tracking setup**, pick that camera, **Connect**, stand in view,
+   look at the TV and press **I'm looking at the TV now**.
+
+What you get: the player's body mesh as a 3D figure during the match, and +1 on any
+roll where the head stayed up for 70% of the drill. The server sends about 7 poses a
+second, roughly 150 ms behind, which is why it drives the avatar and posture rather than fast play.
+
+No GPU handy? `node tools/mock-body-server.mjs` stands in with a simple animated figure.
+
+`tools/body-server-3d-joints.patch` is an optional change for that server: it adds 3D
+joints to the stream, which lets the game draw a stick in the avatar's hands and measure
+head angle more accurately. It has not been run against the model.
+
+## Training quests
+
+The first screen also has **Training quests**: real-time fights where the puck is a hero
+and goblins swing, charge, block and cast. Quick dribbles strike, wide dribbles cleave, a
+fast cut dashes through, a loop freezes, and a pass calls lightning. See the plan for details.
 
 ## Status
 
-The engine, tracking pipeline and screens are tested with automated players and a
-synthetic camera feed. It has not yet been tuned with a real camera, puck and kids;
-see the plan for what to adjust first.
+Verified here: automated tests of the match rules, drills, tracker and quest engine;
+a scripted coach playing whole matches in a real browser; the puck camera against a
+synthetic video; the body-tracking client against the stand-in server.
+
+Not yet tried: a real camera, a real puck, the real body-tracking server, or real kids.
+Expect to tune colour thresholds, pass speeds and how many reps each die pip costs.
