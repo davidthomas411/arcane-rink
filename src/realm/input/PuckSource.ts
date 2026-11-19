@@ -19,6 +19,8 @@ export interface PuckSource {
   readonly sample: PuckSample;
   update(dt: number): void;
   destroy(): void;
+  /** Only the scripted demo player uses this: it needs to see the fight to decide where to go. */
+  drive?(ctx: { encounter: unknown; ready: { x: number; y: number } | null; passing: boolean }): void;
 }
 
 export function emptySample(x = 0, y = 0): PuckSample {

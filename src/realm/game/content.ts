@@ -1,29 +1,26 @@
 /**
- * All quests, dungeons and raids are data. Each one is a list of "offense" tasks
- * (how the hero deals damage — these are the hockey reps) and "hazards"
- * (things on the TV the hero must react to — these keep the head up).
+ * Quests, dungeons and raids are data: which creatures appear, in what waves.
+ * The creatures' behaviour (and so the hockey each one demands) lives in encounter.ts.
+ *
+ *  runner     flees the puck; catch it                      -> carrying with eyes up
+ *  grunt      swings at what is in front of it              -> dribble beside it, step around the swing
+ *  berserker  charges down a lane, stunned if it misses     -> read the lane, move, punish
+ *  brute      shield blocks the front                       -> get the puck behind a defender
+ *  shaman     casts bolts from range, can be interrupted    -> close the gap, dodge sideways
+ *  totem      heals others, immune to the stick             -> pass off a rebounder
+ *  wisp       small swarm that dives at the puck            -> loop around them, or dash through
+ *  dummy      training post that only one move can hurt     -> clean reps
  */
-export type OffenseDef =
-  /** Carry the puck to runes that appear around the floor. */
-  | { kind: "runes"; count: number }
-  /** Dribble between two pads. Small spacing = quick hands, large = wide reach, axis y = pull/push. */
-  | { kind: "twin"; reps: number; spacing: number; axis: "x" | "y" | "diag" }
-  /** Figure-eight around two pillars. */
-  | { kind: "weave"; loops: number }
-  /** Pass off the lit rebounder. */
-  | { kind: "bolt"; count: number }
-  /** Settle the puck dead still inside a small circle. */
-  | { kind: "hold"; count: number };
+export type EnemyKind = "runner" | "grunt" | "berserker" | "brute" | "shaman" | "totem" | "wisp" | "dummy" | "boss";
 
-export type HazardDef =
-  /** A blast lands where the puck is: move it out. */
-  | { kind: "fire"; every: number }
-  /** A wall sweeps the floor: get the puck into the gap. */
-  | { kind: "wave"; every: number }
-  /** A wisp hunts the puck: keep it moving. */
-  | { kind: "chaser"; every: number }
-  /** The enemy shows a symbol on its cast bar: find the matching stone. */
-  | { kind: "cast"; every: number };
+/** The player's moves. A dummy can be limited to one of them. */
+export type Move = "strike" | "cleave" | "dash" | "ring" | "bolt";
+
+export type Spawn = { kind: EnemyKind; count?: number; only?: Move };
+
+export type BossAbility = "swing" | "charge" | "bombs" | "volley" | "ward" | "grunts" | "wisps" | "totem";
+
+export type BossDef = { name: string; hp: number; abilities: BossAbility[] };
 
 export type EncounterKind = "quest" | "pull" | "boss" | "raid" | "daily";
 
@@ -32,16 +29,18 @@ export type EncounterDef = {
   name: string;
   kind: EncounterKind;
   level: number;
-  enemy: { name: string; glyph: string; hp: number };
-  /** Quest text shown to the kids. */
+  /** Shown on the map card. */
+  enemy: { name: string; glyph: string };
   story: string;
   /** What this is really training, shown small for the grown-ups. */
   drill: string;
-  offense: OffenseDef[];
-  hazards: HazardDef[];
+  /** slay: clear every wave. defend: keep the ward alive while clearing them. timed: score reps on the clock. */
+  mode: "slay" | "defend" | "timed";
+  waves: Spawn[][];
+  /** Joins the final wave. */
+  boss?: BossDef;
   /** Target clear time for three stars. */
   par: number;
-  /** If set, the encounter is a timed rep block instead of a health race. */
   timeLimit?: number;
 };
 
@@ -66,73 +65,84 @@ const FROSTMERE: Zone = {
   id: "frostmere",
   name: "Frostmere Vale",
   levels: "Levels 1–4",
-  blurb: "A frozen valley where young heroes learn to keep their eyes on the horizon.",
+  blurb: "A frozen valley where young heroes learn each enemy's tricks.",
   adventures: [
     quest({
       id: "rat-catcher",
       name: "Rat Catcher",
       level: 1,
-      enemy: { name: "Cellar Rats", glyph: "🐀", hp: 240 },
-      story: "Rats are raiding the tavern cellar! Chase each one down before it scurries off.",
-      drill: "Carrying the puck to a spot while watching the screen, not the puck.",
-      offense: [{ kind: "runes", count: 6 }],
-      hazards: [],
-      par: 40
-    }),
-    quest({
-      id: "quick-hands",
-      name: "Quick Hands",
-      level: 1,
-      enemy: { name: "Training Dummy", glyph: "🪵", hp: 290 },
-      story: "The weapon master wants to see fast hands. Strike the twin runes, back and forth!",
-      drill: "Narrow side-to-side dribble: soft, quick touches in front of the body.",
-      offense: [{ kind: "twin", reps: 12, spacing: 1.1, axis: "x" }, { kind: "runes", count: 2 }],
-      hazards: [],
+      enemy: { name: "Cellar Imps", glyph: "🐀" },
+      story: "Imps are loose in the tavern cellar and they run from anything. Chase them down!",
+      drill: "Carrying the puck after a moving target with eyes on the screen.",
+      mode: "slay",
+      waves: [[{ kind: "runner", count: 4 }], [{ kind: "runner", count: 6 }]],
       par: 45
     }),
     quest({
-      id: "wide-reach",
-      name: "The Long Reach",
-      level: 2,
-      enemy: { name: "Frost Boar", glyph: "🐗", hp: 370 },
-      story: "A boar is charging through the snow. Swing wide to turn it aside!",
-      drill: "Wide dribble: full reach to each side, rolling the wrists.",
-      offense: [{ kind: "twin", reps: 10, spacing: 3.2, axis: "x" }, { kind: "runes", count: 3 }],
-      hazards: [{ kind: "fire", every: 9 }],
-      par: 60
+      id: "sparring-yard",
+      name: "The Sparring Yard",
+      level: 1,
+      enemy: { name: "Goblin Recruit", glyph: "👺" },
+      story: "Warm up on the posts, then the weapon master sends in a live goblin. Hit it — and don't stand in front of its swing.",
+      drill: "Quick dribbles beside a target, then moving the puck out of a swing you can see coming.",
+      mode: "slay",
+      waves: [[{ kind: "dummy", only: "strike" }], [{ kind: "dummy", count: 2, only: "cleave" }], [{ kind: "grunt" }], [{ kind: "grunt", count: 2 }]],
+      par: 70
     }),
     quest({
-      id: "pull-push",
-      name: "Pull and Push",
+      id: "tusk-chargers",
+      name: "Tusk Chargers",
       level: 2,
-      enemy: { name: "Ice Imp", glyph: "😈", hp: 370 },
-      story: "The imp only fears the pull-and-push. Drag it close, shove it away!",
-      drill: "Front-to-back dribble: pull the puck in toward the feet and push it out.",
-      offense: [{ kind: "twin", reps: 10, spacing: 2.2, axis: "y" }, { kind: "hold", count: 1 }],
-      hazards: [{ kind: "fire", every: 8 }],
-      par: 60
+      enemy: { name: "Goblin Berserkers", glyph: "🐗" },
+      story: "Berserkers line you up and charge. Get out of the lane, and they crash into the boards — then make them pay.",
+      drill: "Reading a lane and making one quick lateral move, then attacking.",
+      mode: "slay",
+      waves: [[{ kind: "berserker" }], [{ kind: "berserker", count: 2 }], [{ kind: "berserker" }, { kind: "grunt", count: 2 }]],
+      par: 80
+    }),
+    quest({
+      id: "shieldbreakers",
+      name: "Shieldbreakers",
+      level: 2,
+      enemy: { name: "Shield Brutes", glyph: "🛡️" },
+      story: "Their shields stop everything from the front. Work the puck around behind them.",
+      drill: "Getting the puck around a defender: wide moves and quick changes of side.",
+      mode: "slay",
+      waves: [[{ kind: "brute" }], [{ kind: "brute" }, { kind: "grunt" }], [{ kind: "brute", count: 2 }]],
+      par: 85
     }),
     quest({
       id: "crystal-charge",
       name: "Crystal Charge",
       level: 3,
-      enemy: { name: "Wandering Wisp", glyph: "👻", hp: 420 },
-      story: "The wisp can only be struck by crystal lightning. Charge the crystals with a pass!",
-      drill: "Passing off the rebounder and catching the return cleanly.",
-      offense: [{ kind: "bolt", count: 4 }, { kind: "runes", count: 2 }],
-      hazards: [{ kind: "fire", every: 10 }],
-      par: 65
+      enemy: { name: "Mending Totems", glyph: "🗿" },
+      story: "The totems heal every goblin near them and no stick can scratch them. Charge the crystals with a pass and let the lightning do it.",
+      drill: "Passing off the rebounder under pressure, and catching the return cleanly.",
+      mode: "slay",
+      waves: [[{ kind: "totem" }, { kind: "grunt" }], [{ kind: "totem" }, { kind: "grunt", count: 2 }], [{ kind: "totem", count: 2 }, { kind: "brute" }]],
+      par: 90
     }),
     quest({
-      id: "serpent-path",
-      name: "Serpent's Path",
+      id: "wisps",
+      name: "Will-o'-Wisps",
       level: 3,
-      enemy: { name: "Ice Serpent", glyph: "🐍", hp: 440 },
-      story: "Bind the serpent by weaving a knot around the two standing stones.",
-      drill: "Figure-eights: forehand and backhand turns around two points.",
-      offense: [{ kind: "weave", loops: 4 }, { kind: "runes", count: 2 }],
-      hazards: [{ kind: "chaser", every: 14 }],
-      par: 70
+      enemy: { name: "Marsh Wisps", glyph: "👻" },
+      story: "Wisps swarm in packs. Draw a ring around the pack to snuff them all at once — or cut straight through.",
+      drill: "Circles and figure-eights around a moving group; fast pulls through a target.",
+      mode: "slay",
+      waves: [[{ kind: "wisp", count: 5 }], [{ kind: "wisp", count: 7 }], [{ kind: "shaman" }, { kind: "wisp", count: 6 }]],
+      par: 75
+    }),
+    quest({
+      id: "hold-the-gate",
+      name: "Hold the Gate",
+      level: 3,
+      enemy: { name: "Goblin Raiders", glyph: "🚪" },
+      story: "Raiders are coming for the ward stone from every side. Cut them off before they break it!",
+      drill: "Scanning the whole floor, choosing the most urgent threat, and getting there fast.",
+      mode: "defend",
+      waves: [[{ kind: "grunt", count: 3 }], [{ kind: "grunt", count: 3 }, { kind: "berserker" }], [{ kind: "grunt", count: 4 }, { kind: "shaman" }]],
+      par: 90
     }),
     {
       id: "goblin-deeps",
@@ -143,45 +153,41 @@ const FROSTMERE: Zone = {
       shiftSeconds: 45,
       encounters: [
         {
-          id: "goblin-scouts",
-          name: "Goblin Scouts",
+          id: "tunnel-mouth",
+          name: "The Tunnel Mouth",
           kind: "pull",
           level: 3,
-          enemy: { name: "Goblin Scouts", glyph: "👺", hp: 370 },
-          story: "Scouts guard the tunnel mouth.",
-          drill: "Carry + react: move the puck out of danger on a visual cue.",
-          offense: [{ kind: "runes", count: 5 }, { kind: "twin", reps: 8, spacing: 1.2, axis: "x" }],
-          hazards: [{ kind: "fire", every: 6 }],
-          par: 55
+          enemy: { name: "Tunnel Guards", glyph: "👺" },
+          story: "Guards at the tunnel mouth — and a shaman behind them.",
+          drill: "Choosing a target: the caster at the back is the real danger.",
+          mode: "slay",
+          waves: [[{ kind: "grunt", count: 2 }, { kind: "shaman" }], [{ kind: "berserker" }, { kind: "grunt", count: 2 }]],
+          par: 75
         },
         {
-          id: "goblin-shaman",
-          name: "Goblin Shaman",
+          id: "shamans-den",
+          name: "The Shaman's Den",
           kind: "pull",
           level: 3,
-          enemy: { name: "Goblin Shaman", glyph: "🧙", hp: 440 },
-          story: "The shaman is chanting — read his spell and break it!",
-          drill: "Scanning: read a symbol on the screen, then find it while handling.",
-          offense: [{ kind: "twin", reps: 8, spacing: 2.6, axis: "x" }, { kind: "bolt", count: 2 }],
-          hazards: [{ kind: "cast", every: 13 }],
-          par: 65
+          enemy: { name: "Den Shamans", glyph: "🧙" },
+          story: "A totem keeps them alive. Break it first.",
+          drill: "Pass under pressure, then get behind a shielded defender.",
+          mode: "slay",
+          waves: [[{ kind: "totem" }, { kind: "shaman", count: 2 }], [{ kind: "brute" }, { kind: "shaman" }, { kind: "wisp", count: 4 }]],
+          par: 90
         },
         {
           id: "grukk",
           name: "Grukk the Puck-Thief",
           kind: "boss",
           level: 4,
-          enemy: { name: "Grukk the Puck-Thief", glyph: "👹", hp: 1000 },
+          enemy: { name: "Grukk the Puck-Thief", glyph: "👹" },
           story: "Grukk roars and raises the stolen puck!",
-          drill: "Everything together: carry, dribble, pass, dodge and scan.",
-          offense: [
-            { kind: "runes", count: 4 },
-            { kind: "bolt", count: 2 },
-            { kind: "twin", reps: 8, spacing: 3, axis: "x" },
-            { kind: "weave", loops: 2 }
-          ],
-          hazards: [{ kind: "fire", every: 7 }, { kind: "cast", every: 17 }, { kind: "wave", every: 23 }],
-          par: 130
+          drill: "Everything together: strike, dodge, pass and scan, for two minutes straight.",
+          mode: "slay",
+          waves: [[]],
+          boss: { name: "Grukk the Puck-Thief", hp: 800, abilities: ["swing", "bombs", "swing", "grunts", "charge", "ward"] },
+          par: 150
         }
       ]
     }
@@ -192,58 +198,63 @@ const EMBERFALL: Zone = {
   id: "emberfall",
   name: "Emberfall Wastes",
   levels: "Levels 4–8",
-  blurb: "Rivers of fire and clever enemies. Nothing here waits for you to look down.",
+  blurb: "Bigger packs, smarter enemies. Nothing here waits for you to look down.",
   adventures: [
     quest({
-      id: "lava-hop",
-      name: "Lava Hop",
+      id: "ambush",
+      name: "Ambush at the Ford",
       level: 4,
-      enemy: { name: "Magma Slimes", glyph: "🌋", hp: 510 },
-      story: "The ground is splitting! Dash between the safe stones as the lava rolls in.",
-      drill: "Carrying at speed with constant scanning for the next safe lane.",
-      offense: [{ kind: "runes", count: 5 }, { kind: "hold", count: 1 }],
-      hazards: [{ kind: "wave", every: 9 }, { kind: "fire", every: 6 }],
-      par: 75
+      enemy: { name: "Ember Raiders", glyph: "🔥" },
+      story: "Chargers from the flanks and casters on the ridge. Keep your head on a swivel.",
+      drill: "Dodging two kinds of attack at once while keeping the puck moving.",
+      mode: "slay",
+      waves: [[{ kind: "berserker", count: 2 }, { kind: "shaman" }], [{ kind: "shaman", count: 2 }, { kind: "grunt", count: 2 }], [{ kind: "berserker", count: 2 }, { kind: "shaman", count: 2 }]],
+      par: 100
     }),
     quest({
-      id: "ember-duel",
-      name: "Ember Duel",
+      id: "shield-wall",
+      name: "The Shield Wall",
       level: 5,
-      enemy: { name: "Cinder Duelist", glyph: "🤺", hp: 550 },
-      story: "The duelist mirrors every move. Cross him up with diagonal cuts!",
-      drill: "Diagonal dribbles: forehand-out to backhand-in and back.",
-      offense: [{ kind: "twin", reps: 10, spacing: 2.6, axis: "diag" }, { kind: "twin", reps: 10, spacing: 1.1, axis: "x" }],
-      hazards: [{ kind: "cast", every: 12 }],
-      par: 75
+      enemy: { name: "Iron Brutes", glyph: "🛡️" },
+      story: "Three shields and a totem behind them. Lightning cracks a shield wide open.",
+      drill: "Pass to break the shield, then attack from behind while it is down.",
+      mode: "slay",
+      waves: [[{ kind: "brute", count: 2 }, { kind: "totem" }], [{ kind: "brute", count: 3 }, { kind: "totem" }]],
+      par: 110
     }),
     quest({
-      id: "forge-bellows",
-      name: "Forge Bellows",
+      id: "swarm",
+      name: "The Swarm",
       level: 5,
-      enemy: { name: "Forge Golem", glyph: "🗿", hp: 570 },
-      story: "Pump the crystals to overheat the golem — then stand perfectly still as it cools.",
-      drill: "Pass, receive, and settle the puck dead: soft hands on the catch.",
-      offense: [{ kind: "bolt", count: 3 }, { kind: "hold", count: 1 }],
-      hazards: [{ kind: "fire", every: 7 }],
-      par: 80
+      enemy: { name: "Cinder Wisps", glyph: "✨" },
+      story: "The wisps never stop coming. Ring them, cut them, keep moving.",
+      drill: "Continuous circles and cuts at speed.",
+      mode: "slay",
+      waves: [[{ kind: "wisp", count: 8 }], [{ kind: "wisp", count: 8 }, { kind: "berserker" }], [{ kind: "wisp", count: 10 }, { kind: "shaman", count: 2 }]],
+      par: 95
     }),
     quest({
-      id: "cinder-hounds",
-      name: "Cinder Hounds",
+      id: "last-stand",
+      name: "Last Stand at the Forge",
       level: 6,
-      enemy: { name: "Cinder Hounds", glyph: "🐺", hp: 620 },
-      story: "The hounds never stop hunting. Weave through the stones and never let them catch you.",
-      drill: "Puck protection: keep the puck moving away from pressure.",
-      offense: [{ kind: "weave", loops: 3 }, { kind: "runes", count: 4 }],
-      hazards: [{ kind: "chaser", every: 8 }, { kind: "fire", every: 9 }],
-      par: 85
+      enemy: { name: "Forge Raiders", glyph: "⚒️" },
+      story: "They want the forge ward. Four waves. Not one of them gets through.",
+      drill: "Sustained scanning and sprint-to-intercept under fatigue.",
+      mode: "defend",
+      waves: [
+        [{ kind: "grunt", count: 4 }],
+        [{ kind: "grunt", count: 3 }, { kind: "brute" }],
+        [{ kind: "grunt", count: 4 }, { kind: "shaman", count: 2 }],
+        [{ kind: "brute", count: 2 }, { kind: "berserker", count: 2 }]
+      ],
+      par: 130
     }),
     {
       id: "embermaw-forge",
       name: "Dungeon: Embermaw Forge",
       kind: "dungeon",
       level: 6,
-      blurb: "Deep in the forge sleeps Embermaw, the dragon who melts goalposts for fun.",
+      blurb: "Deep in the forge waits Warlord Embermaw, who melts goalposts for fun.",
       shiftSeconds: 45,
       encounters: [
         {
@@ -251,42 +262,37 @@ const EMBERFALL: Zone = {
           name: "Forge Guards",
           kind: "pull",
           level: 6,
-          enemy: { name: "Forge Guards", glyph: "🛡️", hp: 570 },
-          story: "Two guards block the gate.",
-          drill: "Wide dribbles under pressure.",
-          offense: [{ kind: "twin", reps: 10, spacing: 3.2, axis: "x" }, { kind: "runes", count: 4 }],
-          hazards: [{ kind: "chaser", every: 9 }, { kind: "fire", every: 7 }],
-          par: 70
+          enemy: { name: "Forge Guards", glyph: "🛡️" },
+          story: "Shields at the gate, chargers behind.",
+          drill: "Getting behind defenders while a charger lines you up.",
+          mode: "slay",
+          waves: [[{ kind: "brute", count: 2 }, { kind: "berserker" }], [{ kind: "brute" }, { kind: "berserker", count: 2 }, { kind: "grunt", count: 2 }]],
+          par: 95
         },
         {
-          id: "flame-caller",
-          name: "Flame Caller",
+          id: "flame-callers",
+          name: "The Flame Callers",
           kind: "pull",
           level: 6,
-          enemy: { name: "Flame Caller", glyph: "🧝", hp: 620 },
-          story: "She is summoning something. Break every spell!",
-          drill: "Read-and-react while passing.",
-          offense: [{ kind: "bolt", count: 3 }, { kind: "twin", reps: 8, spacing: 2.2, axis: "y" }],
-          hazards: [{ kind: "cast", every: 10 }, { kind: "wave", every: 15 }],
-          par: 75
+          enemy: { name: "Flame Callers", glyph: "🧝" },
+          story: "Three casters, two totems. Break the totems or this never ends.",
+          drill: "Passing while dodging ranged attacks.",
+          mode: "slay",
+          waves: [[{ kind: "totem", count: 2 }, { kind: "shaman", count: 3 }], [{ kind: "shaman", count: 2 }, { kind: "wisp", count: 8 }]],
+          par: 100
         },
         {
           id: "embermaw",
-          name: "Embermaw",
+          name: "Warlord Embermaw",
           kind: "boss",
           level: 7,
-          enemy: { name: "Embermaw the Molten", glyph: "🐲", hp: 1500 },
-          story: "The dragon wakes.",
-          drill: "Full routine at game pace with every hazard live.",
-          offense: [
-            { kind: "bolt", count: 3 },
-            { kind: "weave", loops: 3 },
-            { kind: "twin", reps: 10, spacing: 2.6, axis: "diag" },
-            { kind: "runes", count: 5 },
-            { kind: "hold", count: 1 }
-          ],
-          hazards: [{ kind: "fire", every: 5.5 }, { kind: "cast", every: 14 }, { kind: "wave", every: 17 }, { kind: "chaser", every: 21 }],
-          par: 170
+          enemy: { name: "Warlord Embermaw", glyph: "🐲" },
+          story: "The warlord wakes.",
+          drill: "Full routine at game pace with every attack live.",
+          mode: "slay",
+          waves: [[]],
+          boss: { name: "Warlord Embermaw", hp: 1200, abilities: ["volley", "charge", "bombs", "wisps", "swing", "ward", "charge", "totem"] },
+          par: 190
         }
       ]
     }
@@ -312,18 +318,13 @@ const CITADEL: Zone = {
           name: "The Lich Goalie",
           kind: "raid",
           level: 8,
-          enemy: { name: "The Lich Goalie", glyph: "💀", hp: 3200 },
+          enemy: { name: "The Lich Goalie", glyph: "💀" },
           story: "A thousand-year shutout ends tonight.",
           drill: "Hard 40-second shifts with full rest, like a real game.",
-          offense: [
-            { kind: "bolt", count: 3 },
-            { kind: "runes", count: 5 },
-            { kind: "twin", reps: 10, spacing: 3.2, axis: "x" },
-            { kind: "weave", loops: 3 },
-            { kind: "twin", reps: 10, spacing: 2.2, axis: "y" }
-          ],
-          hazards: [{ kind: "fire", every: 5 }, { kind: "cast", every: 13 }, { kind: "wave", every: 16 }, { kind: "chaser", every: 19 }],
-          par: 300
+          mode: "slay",
+          waves: [[{ kind: "grunt", count: 2 }]],
+          boss: { name: "The Lich Goalie", hp: 2600, abilities: ["volley", "grunts", "swing", "ward", "bombs", "charge", "totem", "wisps", "volley", "charge"] },
+          par: 330
         }
       ]
     }
@@ -332,39 +333,38 @@ const CITADEL: Zone = {
 
 export const ZONES: readonly Zone[] = [FROSTMERE, EMBERFALL, CITADEL];
 
-function rep(id: string, name: string, drill: string, offense: OffenseDef[]): EncounterDef {
+function rep(id: string, name: string, drill: string, wave: Spawn[]): EncounterDef {
   return {
     id,
     name,
     kind: "daily",
     level: 1,
-    enemy: { name: "Training Golem", glyph: "🗿", hp: 9999 },
+    enemy: { name: "Training Posts", glyph: "🪵" },
     story: name,
     drill,
-    offense,
-    hazards: [],
+    mode: "timed",
+    waves: [wave],
     par: 55,
     timeLimit: 55
   };
 }
 
 /**
- * The daily routine: five one-minute blocks covering the staples of a short
- * at-home stickhandling session. No hazards — just clean reps with eyes on the screen.
+ * The daily routine: five one-minute blocks on training posts that can only be
+ * hurt by one move each, so every block is clean reps of one pattern.
  */
 export const DAILY: Adventure = {
   id: "daily-vigil",
   name: "The Five-Minute Vigil",
   kind: "daily",
   level: 1,
-  blurb: "Five one-minute blocks. Do it every day to keep your streak burning.",
-  shiftSeconds: undefined,
+  blurb: "Five one-minute blocks on the training posts. Do it every day to keep your streak burning.",
   encounters: [
-    rep("daily-narrow", "Quick Hands", "Narrow dribble, as many soft touches as you can.", [{ kind: "twin", reps: 999, spacing: 1.1, axis: "x" }]),
-    rep("daily-wide", "Wide Reach", "Wide dribble, full extension both sides.", [{ kind: "twin", reps: 999, spacing: 3.2, axis: "x" }]),
-    rep("daily-pull", "Pull and Push", "Front-to-back on forehand and backhand side.", [{ kind: "twin", reps: 999, spacing: 2.2, axis: "y" }]),
-    rep("daily-eight", "Figure Eights", "Figure-eights around the two stones.", [{ kind: "weave", loops: 999 }]),
-    rep("daily-pass", "Give and Go", "Pass off the crystal, catch, carry to the rune.", [{ kind: "bolt", count: 1 }, { kind: "runes", count: 1 }])
+    rep("daily-narrow", "Quick Hands", "Narrow dribble right beside the post: as many soft touches as you can.", [{ kind: "dummy", only: "strike" }]),
+    rep("daily-wide", "Wide Reach", "Wide dribble between the two posts: full extension, hit both.", [{ kind: "dummy", count: 2, only: "cleave" }]),
+    rep("daily-pull", "Pull and Push", "Pull the puck through the post and push it back, fast.", [{ kind: "dummy", only: "dash" }]),
+    rep("daily-eight", "Figure Eights", "Loop the puck around each post in turn.", [{ kind: "dummy", count: 2, only: "ring" }]),
+    rep("daily-pass", "Give and Go", "Pass off a crystal, catch it clean, go again.", [{ kind: "dummy", only: "bolt" }])
   ]
 };
 

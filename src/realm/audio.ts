@@ -25,14 +25,32 @@ const CUES: Record<string, Tone[]> = {
     { freq: 784, dur: 0.14, type: "triangle", delay: 0.28 },
     { freq: 1047, dur: 0.4, type: "triangle", delay: 0.42 }
   ],
-  ready: [{ freq: 440, dur: 0.1 }, { freq: 660, dur: 0.18, delay: 0.1 }]
+  ready: [{ freq: 440, dur: 0.1 }, { freq: 660, dur: 0.18, delay: 0.1 }],
+  clank: [{ freq: 900, to: 500, dur: 0.07, type: "square", gain: 0.06 }],
+  swing: [{ freq: 260, to: 120, dur: 0.14, type: "sawtooth", gain: 0.08 }],
+  zap: [{ freq: 1400, to: 200, dur: 0.22, type: "sawtooth", gain: 0.1 }, { freq: 90, dur: 0.25, type: "square", gain: 0.08, delay: 0.02 }],
+  freeze: [{ freq: 1200, to: 2400, dur: 0.25, type: "triangle", gain: 0.08 }],
+  coin: [{ freq: 1320, dur: 0.06, type: "triangle", gain: 0.09 }, { freq: 1760, dur: 0.12, type: "triangle", gain: 0.09, delay: 0.06 }]
 };
+
+const sampleUrl = (name: string): string => new URL(`./assets/${name}`, import.meta.url).href;
+
+/** Recorded sounds from the original game, used where a synth blip would feel thin. */
+const SAMPLES: Record<string, { files: string[]; volume: number }> = {
+  strike: { files: ["hit1.mp3", "hit2.mp3", "hit3.mp3"], volume: 0.35 },
+  cleave: { files: ["hit2.mp3", "hit3.mp3"], volume: 0.55 },
+  kill: { files: ["hit1.mp3"], volume: 0.7 },
+  victory: { files: ["victory.mp3"], volume: 0.9 }
+};
+
+let music: HTMLAudioElement | null = null;
 
 let ctx: AudioContext | null = null;
 let muted = false;
 
 export function setMuted(value: boolean): void {
   muted = value;
+  if (value) stopMusic();
 }
 
 export function isMuted(): boolean {
@@ -51,7 +69,28 @@ export function unlockAudio(): void {
   }
 }
 
+export function startMusic(): void {
+  if (muted || typeof Audio === "undefined") return;
+  if (!music) {
+    music = new Audio(sampleUrl("music.m4a"));
+    music.loop = true;
+    music.volume = 0.22;
+  }
+  void music.play().catch(() => undefined);
+}
+
+export function stopMusic(): void {
+  music?.pause();
+}
+
 export function playCue(name: string): void {
+  const sample = SAMPLES[name];
+  if (sample && !muted && typeof Audio !== "undefined") {
+    const clip = new Audio(sampleUrl(sample.files[Math.floor(Math.random() * sample.files.length)]!));
+    clip.volume = sample.volume;
+    void clip.play().catch(() => undefined);
+    if (name !== "victory") return;
+  }
   const tones = CUES[name];
   if (!ctx || muted || !tones || ctx.state !== "running") return;
   const now = ctx.currentTime;

@@ -26,16 +26,15 @@ The original game still runs, untouched apart from the build fix, at `/legacy.ht
 
 **The floor is blank. Everything the player needs to know is on the TV.**
 
-Targets, dangers and enemy spells exist only on screen, drawn on a top-down map of the
-real floor. The only way to play is to look at the TV while the puck is on the stick.
-Heads-up puck control is not a rule the kids are told to follow; it is the only way to win.
+The TV shows a top-down map of the real floor. **The puck is the hero.** Creatures stand
+on that map, turn to face the puck, wind up attacks and move. How the puck is handled
+decides what the hero does. The only way to play is to look at the TV while the puck is
+on the stick, so heads-up puck control is not a rule the kids are told to follow; it is
+the only way to win.
 
-Three things reinforce it:
-
-1. **Don't stand in the fire.** Blasts land where the puck is. Move it or get burned.
-2. **Interrupts.** The boss shows a symbol on its cast bar (top of the screen). The
-   matching stone is one of three on the floor map. Read, scan, go.
-3. **Chasers and waves.** Things that move, so one glance is never enough.
+The first version of this rebuild was a set of drills with a health bar on top: go to the
+circle, alternate between two circles. That was rightly called out as still "chasing a
+circle", so combat was redesigned around enemies that behave.
 
 ## 3. Setup this is built for
 
@@ -58,62 +57,81 @@ Three things reinforce it:
 
 ### What the game can recognise from the puck track
 
-| Action | How it is detected | Trains |
-| --- | --- | --- |
-| Carry | Puck reaches a spot | Moving the puck with eyes up |
-| Dribble touch | Direction reversal of 0.3 ft or more | Hand speed, soft touches |
-| Narrow / wide / pull-push / diagonal | Alternating between two pads at a set spacing and angle | The staple stickhandling patterns |
-| Figure-eight | Winding angle around two pillars | Forehand and backhand turns |
-| Circle | Heading turns through 360° | Around-the-world control |
-| Pass | Puck above a speed threshold aimed at a rebounder, reaching it | Hard, flat passes |
-| Clean catch | Puck settles under control after the rebound | Receiving, soft hands |
-| Hold | Puck dead still in a small circle | Control after a move |
+| Action | How it is detected |
+| --- | --- |
+| Dribble touch | Direction reversal of 0.3 ft or more; 1.4 ft or more counts as wide |
+| Dash | Puck path crosses an enemy above a speed threshold |
+| Loop | Heading turns through 360°; its centre and radius say what was encircled |
+| Pass | Puck above a speed threshold aimed at a rebounder, travelling and reaching it |
+| Clean catch | Puck settles under control after the rebound |
 
 Pass speed is measured in real units and shown in mph in the practice report.
 
 ## 4. Game design
 
-### Heroes and classes
+### The hero's moves
 
-Each kid makes a hero. Up to four heroes form a party. Each class rewards a different habit:
+All five come from how the puck is handled. Nothing is a button.
 
-| Class | Rewards | Signature move (when the power bar is full) |
+| Move | How to do it | Effect | Trains |
+| --- | --- | --- | --- |
+| Strike | Quick dribbles right beside an enemy | Steady damage | Narrow, soft, fast touches |
+| Cleave | Wide dribbles near enemies | Hits everything in reach | Wide dribble, full extension |
+| Dash | Cut the puck fast straight through an enemy | Heavy hit | Pulls, pushes, toe-drag-style cuts |
+| Ring | Draw a loop around enemies | Damages and freezes all inside | Circles, figure-eights |
+| Bolt | Pass off a rebounder | Lightning: stuns, breaks shields and wards. A clean catch empowers the next hit | Passing and receiving |
+
+### The enemies
+
+Each one asks for a different piece of hockey, and several at once ask for decisions.
+
+| Enemy | What it does | What beats it |
 | --- | --- | --- |
-| Blademaster | Hard passes, strong wide dribbles | Thunder Shot: rip a hard pass off a rebounder |
-| Frost Mage | Figure-eights and patterns | Arcane Ring: draw a full circle |
-| Shadow Rogue | Fast hands, quick escapes | Flurry: 7 lightning-quick dribbles |
-| Rune Ranger | Give-and-go | Volley: pass and catch it clean, fast |
+| Imp | Runs from the puck | Chase it down: carrying with eyes up |
+| Grunt | Turns to face you and swings at a red cone in front of it | Dribble beside it, step around the swing. Its back takes extra damage |
+| Berserker | Paints a lane, then charges down it | Leave the lane. If it misses it hits the boards and is stunned |
+| Shield brute | Blocks everything from the front | Get the puck behind it, or crack the shield with a pass |
+| Shaman | Stays at range and casts bolts | Hit it mid-cast to interrupt, or dodge sideways |
+| Totem | Heals the others; sticks cannot hurt it | Only a pass off a rebounder |
+| Wisps | A swarm that dives at the puck | Loop around the pack, or dash through |
+| Bosses | Cycle through swings, charges, bombs, volleys, summons, and a ward only lightning breaks | All of the above, in whatever order the boss demands |
 
-Each hero also has a **challenge tier** (Rookie / Skilled / Elite) that sets target size,
-reaction time and pass-speed threshold, so siblings of different ages share a party fairly.
+Positioning matters (which side of an enemy the puck is on), target choice matters (the
+shaman at the back, the totem healing everyone), and timing matters (punish the stun).
 
-### Combat
+### Quest types
 
-- **Offense** is the reps: runes to carry to, twin pads to dribble between, pillars to
-  weave, crystals (rebounders) to pass off, circles to settle the puck in. Each one hits the enemy.
-- **Every dribble touch chips the enemy**, so there is never a reason to stand still.
-- **Hazards** are the heads-up checks: fire, sweeping waves with a safe gap, hunting wisps,
-  and interruptible spells.
-- **No dead ends.** At zero health the hero is knocked down and gets up with
-  10 quick dribbles. Failing costs stars, not the session.
-- Combos, floating damage numbers, a boss health bar and a cast bar give it the MMO feel.
+- **Slay**: clear waves of mixed enemies.
+- **Defend**: raiders march on a ward stone from every side. Hitting one pulls it onto
+  you instead, so the job is to scan, pick the most urgent one and get there.
+- **Dungeon**: three fights ending in a boss. **Raid**: one long boss fight in shifts.
+- **Daily routine**: five one-minute blocks on training posts that only one move can hurt.
 
-### Progression
+### Heroes, classes, progression
 
-- **Quests** (about a minute) each teach one pattern. **Dungeons** chain three fights and a boss.
-  The **raid** is one huge boss the party wears down in 40-second shifts.
-- **XP and levels** unlock zones. **Loot** has rarities and item levels and auto-equips upgrades.
-- **Hockey skills** (Stickhandling, Passing, Heads-Up) rise with real reps, like profession bars.
-- **The Five-Minute Vigil**: five one-minute blocks (narrow, wide, pull-push, figure-eight,
-  give-and-go) with a daily streak. This is the "do it every day" habit builder.
-- **Practice report** after every run: touches, passes, clean catches, hardest pass, puck
-  travel, dodges, and average time to read a spell and reach the right stone.
+Each kid makes a hero (with their painted portrait from the original game) and picks a
+class that leans on one move: Blademaster (bolts and cleaves), Frost Mage (rings),
+Shadow Rogue (backstabs and dashes), Rune Ranger (chain lightning, empowered catches).
+A power bar fills as they fight; when full, a class gesture fires a signature move.
+
+Each hero has a challenge tier (Rookie / Skilled / Elite) that slows enemies and lowers
+the pass and dash speeds needed, so siblings of different ages share a party fairly.
+
+No dead ends: at zero health the hero is knocked down and gets up with 10 quick dribbles.
+Enemies drop gold and health to pick up. XP, levels, loot with rarities, and three hockey
+skill bars (Stickhandling, Passing, Heads-Up) carry over. A practice report follows every run.
 
 ### Party play with one puck
 
-One player is on the floor at a time. In dungeons and raids the game calls
-**TAG IN** every 45 or 40 seconds, and the next hero starts by bringing the puck to the
-start circle. Work, rest, work — like shifts.
+One player is on the floor at a time. Dungeons and raids call **TAG IN** every 40–45
+seconds; the next hero starts by bringing the puck to the start circle.
+
+### Look
+
+The rink uses the original game's ice texture, cathedral hall, goblin art and player
+portraits, plus its recorded puck hits and music. Enemy types are tinted variants of the
+one goblin painting, because that is the only creature art in the repo. New art dropped
+into `src/realm/assets/` can replace them one line each in `render/ArenaRenderer.ts`.
 
 ## 5. What is built now
 
@@ -124,10 +142,11 @@ Code lives in `src/realm/`:
 | Tracking | `input/CameraSource.ts`, `input/vision.ts`, `input/MouseSource.ts`, `input/calibration.ts` |
 | Action recognition | `input/Gestures.ts` |
 | Combat engine | `game/encounter.ts` |
-| Content (data only) | `game/content.ts` — 3 zones, 10 quests, 2 dungeons, 1 raid, the daily routine |
+| Content (data only) | `game/content.ts` — 3 zones, 11 quests, 2 dungeons, 1 raid, the daily routine |
 | Heroes, loot, rewards | `game/classes.ts`, `game/save.ts`, `game/loot.ts`, `game/rewards.ts` |
 | Screens | `app.ts`, `ui/PlaySession.ts`, `ui/CalibrationScreen.ts`, `render/ArenaRenderer.ts` |
-| Tests | `tests/realm.test.ts` — includes a bot that beats every encounter as every class |
+| Demo player | `input/BotSource.ts` — plays the game itself; used by tests and "Watch it play itself" |
+| Tests | `tests/realm.test.ts` — the demo player beats every encounter as every class |
 
 Adding a quest is a few lines of data in `content.ts`.
 
@@ -156,11 +175,13 @@ on the first evening:
    (Far = TV side), enter the size in feet, click the puck, drag the blue bars onto the rebounders.
 4. Save, play Rat Catcher, then Crystal Charge to check passes register.
 
+To see the game before setting anything up, turn on **Watch it play itself** on the first screen.
+
 ## 8. Next steps, in rough priority
 
 1. Tune from real play (section 6).
 2. Puck-driven menus, so kids never touch the keyboard between fights.
-3. Bring the original art, goblin videos and announcer audio into the new game.
+3. More creature art (boar, shaman, dragon, lich) to replace the tinted goblins; goblin videos and announcer lines.
 4. More zones and bosses; talents per class; cosmetic rewards.
 5. A shooting target zone and shot-speed challenges.
 6. Toe-drag and backhand-specific recognition (needs the player's side to be known).

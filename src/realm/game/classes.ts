@@ -12,7 +12,8 @@ export type ClassDef = {
   powerName: string;
   signature: { name: string; kind: SignatureKind; hint: string };
   passive: string;
-  mods: { touch: number; carry: number; pass: number; pattern: number; hp: number; fuse: number };
+  /** Damage multipliers per verb, plus health and the bonus for striking from behind. */
+  mods: { strike: number; dash: number; bolt: number; ring: number; hp: number; backstab: number };
 };
 
 export const CLASSES: Record<ClassId, ClassDef> = {
@@ -21,33 +22,33 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     name: "Blademaster",
     glyph: "⚔️",
     color: "#c8553d",
-    focus: "Hard, flat passes and wide, strong dribbles",
+    focus: "Hard passes and strong, wide dribbles",
     powerName: "Rage",
     signature: { name: "Thunder Shot", kind: "hardPass", hint: "Rip a HARD pass off a crystal" },
-    passive: "Passes hit 40% harder. Extra health.",
-    mods: { touch: 1, carry: 1, pass: 1.4, pattern: 1, hp: 1.2, fuse: 1 }
+    passive: "Bolts and wide cleaves hit hard. Extra health.",
+    mods: { strike: 1.15, dash: 1, bolt: 1.4, ring: 1, hp: 1.25, backstab: 1.5 }
   },
   mage: {
     id: "mage",
     name: "Frost Mage",
     glyph: "🔮",
     color: "#6fa8dc",
-    focus: "Figure-eights, circles and smooth puck patterns",
+    focus: "Circles, figure-eights and smooth patterns",
     powerName: "Mana",
-    signature: { name: "Arcane Ring", kind: "circle", hint: "Draw a full circle with the puck" },
-    passive: "Weaves and twin runes hit 40% harder.",
-    mods: { touch: 1, carry: 1, pass: 1, pattern: 1.4, hp: 0.95, fuse: 1 }
+    signature: { name: "Blizzard", kind: "circle", hint: "Draw a full circle with the puck" },
+    passive: "Rings hit harder and freeze longer.",
+    mods: { strike: 1, dash: 1, bolt: 1.15, ring: 1.7, hp: 0.95, backstab: 1.5 }
   },
   rogue: {
     id: "rogue",
     name: "Shadow Rogue",
     glyph: "🗡️",
     color: "#b58bd6",
-    focus: "Fast hands and quick escapes",
+    focus: "Fast hands and getting around a defender",
     powerName: "Energy",
-    signature: { name: "Flurry", kind: "flurry", hint: "7 lightning-quick dribbles" },
-    passive: "Every dribble hits twice as hard. More time to dodge.",
-    mods: { touch: 2, carry: 1, pass: 1, pattern: 1, hp: 1, fuse: 1.25 }
+    signature: { name: "Shadow Flurry", kind: "flurry", hint: "7 lightning-quick dribbles" },
+    passive: "Strikes from behind hit far harder. Dashes cut deeper.",
+    mods: { strike: 1.1, dash: 1.4, bolt: 1, ring: 1, hp: 1, backstab: 2.2 }
   },
   ranger: {
     id: "ranger",
@@ -57,8 +58,8 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     focus: "Give-and-go: pass, catch clean, move",
     powerName: "Focus",
     signature: { name: "Volley", kind: "quickPass", hint: "Pass and catch it clean, fast" },
-    passive: "Rune hits and clean catches hit 30% harder.",
-    mods: { touch: 1, carry: 1.3, pass: 1.15, pattern: 1, hp: 1, fuse: 1 }
+    passive: "Bolts chain to more enemies. A clean catch empowers the next hit.",
+    mods: { strike: 1, dash: 1.1, bolt: 1.3, ring: 1.1, hp: 1, backstab: 1.5 }
   }
 };
 

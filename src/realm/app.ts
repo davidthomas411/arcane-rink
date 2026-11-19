@@ -19,9 +19,10 @@ import {
 } from "./game/save";
 import { CameraSource, CameraTracker } from "./input/CameraSource";
 import { loadCalibration, saveCalibration, type Calibration } from "./input/calibration";
+import { BotSource } from "./input/BotSource";
 import { MouseSource } from "./input/MouseSource";
 import { CalibrationScreen } from "./ui/CalibrationScreen";
-import { PlaySession, type SessionResult } from "./ui/PlaySession";
+import { HERO_PORTRAITS, PlaySession, type SessionResult } from "./ui/PlaySession";
 import { escapeHtml, makeRng } from "./util";
 
 const FPS_TO_MPH = 0.6818;
@@ -29,6 +30,13 @@ const SKILLS: readonly SkillId[] = ["stick", "pass", "aware"];
 
 function stars(count: number, max = 3): string {
   return `<span class="stars" aria-label="${count} of ${max} stars">${"★".repeat(count)}<i>${"★".repeat(Math.max(0, max - count))}</i></span>`;
+}
+
+const asset = (name: string): string => new URL(`./assets/${name}`, import.meta.url).href;
+
+function portrait(hero: Pick<Hero, "portrait" | "classId">): string {
+  const face = HERO_PORTRAITS[hero.portrait];
+  return `<div class="portrait">${face ? `<img src="${asset(face)}" alt="" />` : `<span>${CLASSES[hero.classId].glyph}</span>`}</div>`;
 }
 
 function bar(fraction: number, cls = ""): string {
@@ -42,6 +50,8 @@ export class RealmApp {
   private cameraRunning = false;
   private session: PlaySession | null = null;
   private notice = "";
+  /** Demo mode: a scripted player handles the puck so the game can be watched. Nothing is saved. */
+  private demo = false;
 
   constructor(private readonly root: HTMLElement) {
     this.save = loadSave();
@@ -78,14 +88,14 @@ export class RealmApp {
     return `
       <article class="hero-card${inParty ? " in-party" : ""}" style="--class:${cls.color}">
         <div class="hero-top">
-          <div class="portrait">${cls.glyph}</div>
+          ${portrait(hero)}
           <div>
             <h3>${escapeHtml(hero.name)} <span class="jersey">#${escapeHtml(hero.jersey)}</span></h3>
             <p>Level ${hero.level} ${cls.name} · ${TIERS[hero.tier].name}</p>
           </div>
         </div>
         ${bar(hero.xp / xpForLevel(hero.level), "bar-xp")}
-        <p class="tiny">${hero.xp} / ${xpForLevel(hero.level)} XP · Gear score ${gear.gearScore}</p>
+        <p class="tiny">${hero.xp} / ${xpForLevel(hero.level)} XP · Gear score ${gear.gearScore} · ${hero.gold} gold</p>
         <div class="skills">
           ${SKILLS.map((id) => `<div><span>${SKILL_LABEL[id]}</span>${bar(hero.skills[id] / SKILL_MAX, "bar-skill")}<b>${Math.floor(hero.skills[id])}</b></div>`).join("")}
         </div>
@@ -120,13 +130,14 @@ export class RealmApp {
         <aside class="panel">
           <h2>Rink setup</h2>
           <dl class="facts">
-            <dt>Puck tracking</dt><dd>${camera ? "Overhead camera" : "Mouse (desk practice)"}</dd>
+            <dt>Puck tracking</dt><dd>${this.demo ? "Demo player" : camera ? "Overhead camera" : "Mouse (desk practice)"}</dd>
             <dt>Floor</dt><dd>${this.cal.arenaW} × ${this.cal.arenaD} ft</dd>
             <dt>Rebounders</dt><dd>${this.cal.rebounders.length || "none — pass quests become carries"}</dd>
           </dl>
           <div class="col">
             <button class="btn" data-act="calibrate" type="button">Camera &amp; floor setup</button>
             ${this.cal.cameraReady ? `<button class="btn" data-act="toggle-input" type="button">Switch to ${camera ? "mouse" : "camera"}</button>` : ""}
+            <button class="btn${this.demo ? " is-on" : ""}" data-act="demo" type="button">Watch it play itself: ${this.demo ? "on" : "off"}</button>
             <button class="btn" data-act="mute" type="button">Sound: ${isMuted() ? "off" : "on"}</button>
             <a class="btn" href="legacy.html">Original shooting-pad game</a>
           </div>
@@ -167,6 +178,10 @@ export class RealmApp {
           saveCalibration(this.cal);
           this.showTavern();
           break;
+        case "demo":
+          this.demo = !this.demo;
+          this.showTavern();
+          break;
         case "mute":
           setMuted(!isMuted());
           this.showTavern();
@@ -181,6 +196,7 @@ export class RealmApp {
   private showHeroForm(): void {
     let classId: ClassId = "warrior";
     let tier: TierId = "skilled";
+    let face = "class";
     const el = this.screen(
       `
       <header class="screen-head"><div><h1>New hero</h1><p class="lede">Every class levels up a different hockey habit.</p></div></header>
@@ -188,6 +204,11 @@ export class RealmApp {
         <div class="row">
           <label>Hero name <input name="name" maxlength="14" required autocomplete="off" placeholder="e.g. Ava" /></label>
           <label>Jersey # <input name="jersey" maxlength="2" inputmode="numeric" placeholder="00" /></label>
+        </div>
+        <h2>Portrait</h2>
+        <div class="row" data-group="portrait">
+          <button type="button" class="face is-on" data-face="class"><span>Class crest</span></button>
+          ${Object.entries(HERO_PORTRAITS).map(([key, file]) => `<button type="button" class="face" data-face="${key}"><img src="${asset(file)}" alt="Player portrait ${key.toUpperCase()}" /></button>`).join("")}
         </div>
         <h2>Class</h2>
         <div class="choice-grid" data-group="class">
@@ -218,7 +239,11 @@ export class RealmApp {
       const target = event.target as HTMLElement;
       const classButton = target.closest<HTMLElement>("[data-class]");
       const tierButton = target.closest<HTMLElement>("[data-tier]");
-      if (classButton) {
+      const faceButton = target.closest<HTMLElement>("[data-face]");
+      if (faceButton) {
+        face = faceButton.dataset.face ?? "class";
+        el.querySelectorAll("[data-face]").forEach((node) => node.classList.toggle("is-on", node === faceButton));
+      } else if (classButton) {
         classId = classButton.dataset.class as ClassId;
         el.querySelectorAll("[data-class]").forEach((node) => node.classList.toggle("is-on", node === classButton));
       } else if (tierButton) {
@@ -231,7 +256,7 @@ export class RealmApp {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(form);
-      const hero = createHero(String(data.get("name") ?? ""), String(data.get("jersey") ?? ""), classId, tier);
+      const hero = createHero(String(data.get("name") ?? ""), String(data.get("jersey") ?? ""), classId, tier, face);
       this.save.heroes.push(hero);
       if (this.save.party.length < MAX_PARTY) this.save.party.push(hero.id);
       this.commit();
@@ -247,7 +272,7 @@ export class RealmApp {
     const el = this.screen(
       `
       <header class="screen-head">
-        <div><h1>${cls.glyph} ${escapeHtml(hero.name)} <span class="jersey">#${escapeHtml(hero.jersey)}</span></h1>
+        <div><h1>${escapeHtml(hero.name)} <span class="jersey">#${escapeHtml(hero.jersey)}</span></h1>
         <p class="lede">Level ${hero.level} ${cls.name} — ${cls.focus}</p></div>
         <button class="btn" data-act="back" type="button">← Back</button>
       </header>
@@ -373,7 +398,7 @@ export class RealmApp {
     const party = partyHeroes(this.save);
     // Quests and the daily routine are solo: the first hero in the party plays.
     const heroes = adventure.kind === "dungeon" || adventure.kind === "raid" ? party : party.slice(0, 1);
-    if (this.cal.input === "camera" && !this.cameraRunning) {
+    if (!this.demo && this.cal.input === "camera" && !this.cameraRunning) {
       try {
         await this.getTracker().start(this.cal.deviceId);
         this.cameraRunning = true;
@@ -389,6 +414,7 @@ export class RealmApp {
       heroes,
       cal,
       makeSource: (toArena) => {
+        if (this.demo) return new BotSource(cal.arenaW, cal.arenaD, cal.rebounders);
         if (cal.input === "camera") {
           const tracker = this.getTracker();
           tracker.color = cal.color;
@@ -404,17 +430,24 @@ export class RealmApp {
   }
 
   private showResults(result: SessionResult): void {
+    // A demo run is for watching: work on a throwaway copy so nothing is earned by the bot.
+    const demo = this.demo;
+    const save = demo ? (JSON.parse(JSON.stringify(this.save)) as Save) : this.save;
+    if (demo) {
+      for (const h of result.heroes) h.hero = save.heroes.find((x) => x.id === h.hero.id) ?? h.hero;
+    }
     const summary: RewardSummary = applyRewards(
-      this.save,
+      save,
       {
         adventure: result.adventure,
         completed: result.completed,
         encounters: result.encounters,
-        heroes: result.heroes.map((h) => ({ hero: h.hero, tally: h.runtime.tally, practice: h.practice }))
+        heroes: result.heroes.map((h) => ({ hero: h.hero, tally: h.runtime.tally, practice: h.practice })),
+        gold: result.gold
       },
       makeRng((Date.now() ^ 0x51ed270b) >>> 0)
     );
-    this.commit();
+    if (!demo) this.commit();
 
     const played = result.heroes.filter((h) => h.runtime.tally.seconds > 0);
     const avgReaction = result.reactionTimes.length > 0 ? result.reactionTimes.reduce((a, b) => a + b, 0) / result.reactionTimes.length : null;
@@ -452,7 +485,8 @@ export class RealmApp {
       <header class="screen-head">
         <div>
           <h1>${result.completed ? "Victory!" : "Adventure ended"}</h1>
-          <p class="lede">${escapeHtml(result.adventure.name)} ${result.completed ? stars(summary.stars) : ""}</p>
+          <p class="lede">${escapeHtml(result.adventure.name)} ${result.completed ? stars(summary.stars) : ""}${result.gold ? ` · ${result.gold} gold` : ""}</p>
+          ${demo ? `<p class="notice">Demo run — played by the scripted player, so nothing below was saved.</p>` : ""}
         </div>
         ${summary.streak !== null ? `<div class="streak">🔥 ${summary.streak} day streak</div>` : ""}
       </header>

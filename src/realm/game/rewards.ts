@@ -9,6 +9,8 @@ export type RewardInput = {
   completed: boolean;
   encounters: { def: EncounterDef; stars: number }[];
   heroes: { hero: Hero; tally: HeroTally; practice: PracticeStats }[];
+  /** Gold picked up off the floor; everyone who played gets it. */
+  gold?: number;
 };
 
 export type HeroReward = {
@@ -55,6 +57,7 @@ export function applyRewards(save: Save, input: RewardInput, rng: () => number):
     hero.stats.topPassSpeed = Math.max(hero.stats.topPassSpeed, practice.topPassSpeed);
     hero.stats.distanceFt += practice.distanceFt;
     hero.stats.seconds += tally.seconds;
+    hero.gold += input.gold ?? 0;
 
     const skillUps: Record<SkillId, number> = {
       stick: grantSkill(hero, "stick", tally.stick),

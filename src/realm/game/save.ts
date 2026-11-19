@@ -30,6 +30,9 @@ export type Hero = {
   jersey: string;
   classId: ClassId;
   tier: TierId;
+  /** "class" for the class crest, or the key of one of the painted player portraits. */
+  portrait: string;
+  gold: number;
   xp: number;
   level: number;
   gear: Partial<Record<Slot, Item>>;
@@ -55,13 +58,15 @@ export function xpForLevel(level: number): number {
   return 100 * Math.max(1, level);
 }
 
-export function createHero(name: string, jersey: string, classId: ClassId, tier: TierId): Hero {
+export function createHero(name: string, jersey: string, classId: ClassId, tier: TierId, portrait = "class"): Hero {
   return {
     id: uid(),
     name: name.trim().slice(0, 14) || "Rookie",
     jersey: jersey.trim().slice(0, 2) || "00",
     classId,
     tier,
+    portrait,
+    gold: 0,
     xp: 0,
     level: 1,
     gear: {},
@@ -125,6 +130,8 @@ function normalizeHero(raw: unknown): Hero | null {
   return {
     ...base,
     id: r.id,
+    portrait: typeof r.portrait === "string" ? r.portrait : "class",
+    gold: Math.max(0, num(r.gold, 0)),
     xp: Math.max(0, num(r.xp, 0)),
     level: Math.max(1, Math.min(MAX_LEVEL, Math.round(num(r.level, 1)))),
     gear,

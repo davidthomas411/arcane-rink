@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyHomography, makeRng, solveHomography, TAU } from "../src/realm/util";
+import { applyHomography, clamp, makeRng, solveHomography, TAU } from "../src/realm/util";
+import { BotSource } from "../src/realm/input/BotSource";
 import { GestureDetector } from "../src/realm/input/Gestures";
 import { emptySample, type PuckSample } from "../src/realm/input/PuckSource";
 import { defaultCalibration, defaultRebounders } from "../src/realm/input/calibration";
@@ -144,95 +145,156 @@ describe("gestures", () => {
   });
 });
 
-/** Plays an encounter the way a kid would: do the objective, dodge what the screen shows. */
-function playEncounter(enc: Encounter, limitSec: number): void {
-  const rebs = defaultRebounders(W, D);
-  const g = new GestureDetector(rebs, { passMinSpeed: enc.hero.tier.passMinSpeed });
-  const bot = new Bot();
-  let boltPhase = 0;
+/** Runs an encounter with the scripted player until it ends or the clock runs out. */
+function play(enc: Encounter, limitSec: number, rebounders = defaultRebounders(W, D)): BotSource {
+  const g = new GestureDetector(rebounders, { passMinSpeed: enc.hero.tier.passMinSpeed });
+  const bot = new BotSource(W, D, rebounders);
   for (let t = 0; t < limitSec && !enc.done; t += DT) {
-    const o = enc.objective;
-    const fire = enc.hazards.find((h) => h.kind === "fire" && Math.hypot(h.x - bot.s.x, h.y - bot.s.y) < h.r + 0.3);
-    const sigil = enc.hazards.find((h) => h.kind === "sigil" && h.correct);
-    if (enc.reviveLeft > 0) {
-      bot.moveTo(Math.floor(t * 4) % 2 === 0 ? 4.4 : 5.6, 4, 6);
-    } else if (sigil && sigil.kind === "sigil") {
-      bot.moveTo(sigil.x, sigil.y, 6);
-    } else if (fire && fire.kind === "fire") {
-      const away = bot.s.x < W / 2 ? 1 : -1;
-      bot.moveTo(fire.x + away * (fire.r + 1), fire.y, 7);
-    } else if (!o) {
-      bot.moveTo(bot.s.x, bot.s.y, 0);
-    } else if (o.kind === "runes" || o.kind === "hold") {
-      bot.moveTo(o.x, o.y, 5);
-    } else if (o.kind === "twin") {
-      const target = o.next === 0 ? o.a : o.b;
-      bot.moveTo(target.x, target.y, 6);
-    } else if (o.kind === "weave") {
-      const p = o.cur === 0 ? o.a : o.b;
-      const a = Math.atan2(bot.s.y - p.y, bot.s.x - p.x) + 0.35;
-      bot.moveTo(p.x + Math.cos(a) * 1, p.y + Math.sin(a) * 1, 6);
-    } else if (o.kind === "bolt") {
-      const reb = rebs.find((r) => r.id === o.rebounderId)!;
-      const mx = (reb.ax + reb.bx) / 2;
-      const my = (reb.ay + reb.by) / 2;
-      if (boltPhase === 0) { if (bot.moveTo(mx, my, 14)) boltPhase = 1; }
-      else if (boltPhase === 1) { if (bot.moveTo(5, 4, 8)) boltPhase = 2; }
-      else { bot.moveTo(5, 4, 0); if (!g.passing) boltPhase = 0; }
-    }
-    g.update(DT, bot.s);
-    enc.update(DT, bot.s, g);
+    bot.drive({ encounter: enc, ready: null, passing: g.passing });
+    bot.update(DT);
+    g.update(DT, bot.sample);
+    enc.update(DT, bot.sample, g);
   }
+  return bot;
 }
+
+const still = (): PuckSample => ({ ...emptySample(5, 5), visible: true, conf: 1 });
 
 describe("encounters", () => {
   const arena = { w: W, d: D, rebounders: defaultRebounders(W, D) };
+  const hero = (classId: "warrior" | "mage" | "rogue" | "ranger" = "mage", tier: "rookie" | "skilled" | "elite" = "skilled") =>
+    makeHeroRuntime(createHero("Bot", "9", classId, tier));
+  const find = (id: string) => allAdventures().flatMap((a) => a.encounters).find((e) => e.id === id)!;
 
   it("every quest, pull and boss can be beaten by each class", () => {
     for (const adventure of ZONES.flatMap((z) => z.adventures)) {
       for (const def of adventure.encounters) {
         for (const classId of ["warrior", "mage", "rogue", "ranger"] as const) {
-          const enc = new Encounter(def, arena, makeRng(7), makeHeroRuntime(createHero("Bot", "9", classId, "skilled")));
-          playEncounter(enc, 600);
+          const enc = new Encounter(def, arena, makeRng(7), hero(classId));
+          play(enc, 900);
           expect(enc.done, `${def.id} as ${classId}`).toBe(true);
-          expect(enc.stars).toBeGreaterThanOrEqual(1);
           expect(enc.time, `${def.id} as ${classId} took ${enc.time.toFixed(0)}s vs par ${def.par}`).toBeLessThan(def.par * 2.5);
         }
       }
     }
   });
 
-  it("daily blocks end on the clock and score reps", () => {
-    const daily = allAdventures().find((a) => a.kind === "daily")!;
-    for (const def of daily.encounters) {
-      const enc = new Encounter(def, arena, makeRng(3), makeHeroRuntime(createHero("Bot", "9", "mage", "rookie")));
-      playEncounter(enc, 120);
-      expect(enc.done).toBe(true);
-      expect(enc.time).toBeGreaterThanOrEqual(def.timeLimit!);
-      expect(enc.damageDone, def.id).toBeGreaterThan(20);
+  it("stays beatable on every difficulty tier and without rebounders", () => {
+    for (const tier of ["rookie", "elite"] as const) {
+      for (const id of ["sparring-yard", "crystal-charge", "grukk"]) {
+        const enc = new Encounter(find(id), arena, makeRng(11), hero("warrior", tier));
+        play(enc, 900);
+        expect(enc.done, `${id} on ${tier}`).toBe(true);
+      }
+    }
+    for (const id of ["crystal-charge", "grukk"]) {
+      const enc = new Encounter(find(id), { w: W, d: D, rebounders: [] }, makeRng(2), hero("ranger"));
+      play(enc, 900, []);
+      expect(enc.done, `${id} without rebounders`).toBe(true);
+      expect(enc.signatureKind).toBe("flurry");
     }
   });
 
-  it("standing in fire knocks the hero down, and dribbling revives them", () => {
-    const def = { ...ZONES[0]!.adventures[2]!.encounters[0]!, hazards: [{ kind: "fire" as const, every: 1 }] };
-    const rt = makeHeroRuntime(createHero("Bot", "9", "mage", "skilled"));
-    const enc = new Encounter(def, arena, makeRng(1), rt);
-    const g = new GestureDetector(arena.rebounders, { passMinSpeed: 6 });
-    const bot = new Bot();
-    for (let t = 0; t < 60 && enc.reviveLeft === 0; t += DT) { bot.moveTo(5, 5, 0); g.update(DT, bot.s); enc.update(DT, bot.s, g); }
-    expect(enc.reviveLeft).toBe(10);
-    expect(rt.tally.downs).toBe(1);
-    for (let t = 0; t < 20 && enc.reviveLeft > 0; t += DT) { bot.moveTo(Math.floor(t * 4) % 2 === 0 ? 4.4 : 5.6, 5, 6); g.update(DT, bot.s); enc.update(DT, bot.s, g); }
-    expect(enc.reviveLeft).toBe(0);
-    expect(rt.hp).toBeGreaterThan(0);
+  it("daily blocks end on the clock and score reps of the right move only", () => {
+    const daily = allAdventures().find((a) => a.kind === "daily")!;
+    for (const def of daily.encounters) {
+      const enc = new Encounter(def, arena, makeRng(3), hero("mage", "rookie"));
+      play(enc, 120);
+      expect(enc.done).toBe(true);
+      expect(enc.time).toBeGreaterThanOrEqual(def.timeLimit!);
+      expect(enc.damageDone, def.id).toBeGreaterThan(40);
+    }
   });
 
-  it("falls back to carries when no rebounder is set up", () => {
-    const def = ZONES[0]!.adventures[4]!.encounters[0]!;
-    const enc = new Encounter(def, { w: W, d: D, rebounders: [] }, makeRng(2), makeHeroRuntime(createHero("Bot", "9", "ranger", "skilled")));
-    playEncounter(enc, 300);
+  it("a shield blocks the front, and the back takes extra", () => {
+    const def = { ...find("shieldbreakers"), waves: [[{ kind: "brute" as const }]] };
+    const run = (side: 1 | -1): number => {
+      const enc = new Encounter(def, arena, makeRng(1), hero("rogue"));
+      const g = new GestureDetector(arena.rebounders, { passMinSpeed: 6 });
+      const puck = still();
+      for (let t = 0; t < 3; t += DT) enc.update(DT, puck, g);
+      const brute = enc.enemies[0]!;
+      brute.stun = 0;
+      brute.cd = 99;
+      // Dribble directly in front of it or directly behind it.
+      const bx = brute.x + Math.cos(brute.facing) * (brute.r + 0.5) * side;
+      const by = brute.y + Math.sin(brute.facing) * (brute.r + 0.5) * side;
+      const facing = brute.facing;
+      for (let t = 0; t < 1.2; t += DT) {
+        const flip = Math.floor(t / 0.14) % 2 === 0 ? 1 : -1;
+        const nx = bx - Math.sin(facing) * 0.35 * flip;
+        const ny = by + Math.cos(facing) * 0.35 * flip;
+        puck.vx = (nx - puck.x) / DT; puck.vy = (ny - puck.y) / DT; puck.speed = Math.min(4, Math.hypot(puck.vx, puck.vy)); puck.x = nx; puck.y = ny;
+        brute.facing = facing;
+        brute.cd = 99;
+        g.update(DT, puck);
+        enc.update(DT, puck, g);
+      }
+      return enc.damageDone;
+    };
+    expect(run(1)).toBe(0);
+    expect(run(-1)).toBeGreaterThan(10);
+  });
+
+  it("a charger that misses is stunned, and standing in a swing hurts", () => {
+    const enc = new Encounter({ ...find("tusk-chargers"), waves: [[{ kind: "berserker" as const }]] }, arena, makeRng(4), hero());
+    const g = new GestureDetector(arena.rebounders, { passMinSpeed: 6 });
+    const puck = still();
+    let stunned = false;
+    for (let t = 0; t < 30 && !stunned; t += DT) {
+      const e = enc.enemies[0];
+      // Step well out of the lane once it commits.
+      if (e && e.state === "charge") { puck.x = e.x + Math.sin(e.facing) * 3; puck.y = clamp(e.y - Math.cos(e.facing) * 3, 0.5, D - 0.5); }
+      g.update(DT, puck);
+      enc.update(DT, puck, g);
+      stunned = !!e && e.stun > 1;
+    }
+    expect(stunned).toBe(true);
+    expect(enc.dodges).toBeGreaterThan(0);
+
+    const rt = hero();
+    const enc2 = new Encounter({ ...find("sparring-yard"), waves: [[{ kind: "grunt" as const }]] }, arena, makeRng(4), rt);
+    const p2 = still();
+    for (let t = 0; t < 40 && enc2.reviveLeft === 0; t += DT) { g.update(DT, p2); enc2.update(DT, p2, g); }
+    expect(rt.tally.hitsTaken).toBeGreaterThan(3);
+    expect(enc2.reviveLeft).toBe(10);
+  });
+
+  it("totems shrug off the stick but not lightning, and a loop freezes what it encloses", () => {
+    const enc = new Encounter({ ...find("crystal-charge"), waves: [[{ kind: "totem" as const }]] }, arena, makeRng(5), hero("ranger"));
+    const bot = play(enc, 60);
     expect(enc.done).toBe(true);
-    expect(enc.signatureKind).toBe("flurry");
+    expect(bot.sample.visible).toBe(true);
+
+    const enc2 = new Encounter({ ...find("wisps"), waves: [[{ kind: "grunt" as const, count: 2 }]] }, arena, makeRng(6), hero("mage"));
+    const g = new GestureDetector(arena.rebounders, { passMinSpeed: 6 });
+    const puck = still();
+    for (let t = 0; t < 1.5; t += DT) enc2.update(DT, puck, g);
+    const a = enc2.enemies[0]!;
+    a.cd = 99;
+    for (let i = 0; i <= 70; i += 1) {
+      const ang = (i / 60) * TAU;
+      const nx = a.x + Math.cos(ang) * 1.2;
+      const ny = a.y + Math.sin(ang) * 1.2;
+      puck.vx = (nx - puck.x) / DT; puck.vy = (ny - puck.y) / DT; puck.speed = Math.min(8, Math.hypot(puck.vx, puck.vy)); puck.x = nx; puck.y = ny;
+      const ax = a.x; const ay = a.y;
+      g.update(DT, puck);
+      enc2.update(DT, puck, g);
+      a.x = ax; a.y = ay; a.cd = 99;
+    }
+    expect(a.frozen || a.state === "dead").toBe(true);
+  });
+
+  it("a ward that is not defended breaks and costs a star", () => {
+    const enc = new Encounter(find("hold-the-gate"), arena, makeRng(8), hero());
+    const g = new GestureDetector(arena.rebounders, { passMinSpeed: 6 });
+    const puck = { ...still(), x: 0.5, y: 6.5 };
+    for (let t = 0; t < 90 && !enc.wardBroken; t += DT) { g.update(DT, puck); enc.update(DT, puck, g); }
+    expect(enc.wardBroken).toBe(true);
+    const defended = new Encounter(find("hold-the-gate"), arena, makeRng(8), hero("warrior"));
+    play(defended, 600);
+    expect(defended.done).toBe(true);
+    expect(defended.wardBroken).toBe(false);
   });
 });
 

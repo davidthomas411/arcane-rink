@@ -31,11 +31,11 @@ body,
 }
 
 body {
+  /* The cathedral rink from the original game, dimmed so panels stay readable. */
   background:
-    radial-gradient(circle at 18% 8%, rgba(212, 175, 55, 0.07), transparent 50%),
-    radial-gradient(circle at 85% 90%, rgba(122, 28, 28, 0.08), transparent 50%),
-    linear-gradient(180deg, #0f1113, #141517 55%, #0d0f10);
-  background-attachment: fixed;
+    linear-gradient(180deg, rgba(10, 11, 13, 0.82), rgba(12, 12, 14, 0.9) 55%, rgba(8, 9, 10, 0.96)),
+    url("./assets/hall.jpg") center top / cover no-repeat fixed,
+    #0f1113;
 }
 
 h1,
@@ -115,6 +115,19 @@ small {
   padding: 18px;
   color: var(--text);
   font-family: inherit;
+}
+
+.panel,
+.hero-card,
+.reward,
+.frame {
+  position: relative;
+  border-color: #3b2a1c;
+  outline: 1px solid rgba(212, 175, 55, 0.35);
+  outline-offset: -6px;
+  background:
+    linear-gradient(180deg, rgba(58, 42, 28, 0.55), rgba(20, 16, 12, 0.2) 30%),
+    linear-gradient(180deg, rgba(38, 33, 29, 0.96), rgba(18, 16, 15, 0.97));
 }
 
 .row {
@@ -635,7 +648,10 @@ select {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 45%, #1b1d21, #0b0c0e 75%);
+  background:
+    radial-gradient(ellipse at 50% 55%, rgba(8, 9, 12, 0.35), rgba(5, 6, 8, 0.88) 75%),
+    url("./assets/hall.jpg") center 30% / cover no-repeat,
+    #0b0c0e;
 }
 
 .play-canvas {
@@ -872,6 +888,113 @@ select {
     padding: 6px 8px;
   }
   .meta {
+    display: none;
+  }
+}
+
+/* Portraits hold painted art where there is some, a glyph where there is not. */
+.portrait {
+  overflow: hidden;
+}
+
+.portrait img {
+  width: 135%;
+  height: 135%;
+  object-fit: cover;
+  object-position: 50% 8%;
+}
+
+.portrait span {
+  line-height: 1;
+}
+
+.frame-note {
+  min-height: 1.3em;
+  margin-top: 4px;
+  font-size: clamp(13px, 1.15vw, 19px);
+  font-weight: 700;
+  color: #ffd75a;
+  text-shadow: 0 1px 2px #000;
+}
+
+.gold {
+  font-size: clamp(14px, 1.3vw, 21px);
+  color: #f2c53d;
+  font-weight: 700;
+  min-height: 1.3em;
+}
+
+/* A standing reminder of the five moves, like an action bar. */
+.moves {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.moves span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 7.2em;
+  padding: 6px 10px;
+  font-size: clamp(11px, 0.95vw, 15px);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: linear-gradient(180deg, rgba(42, 44, 47, 0.92), rgba(17, 18, 20, 0.94));
+  border: 2px solid #3b2a1c;
+  outline: 1px solid rgba(212, 175, 55, 0.3);
+  outline-offset: -4px;
+  border-radius: 6px;
+}
+
+.moves b {
+  font-size: clamp(13px, 1.15vw, 18px);
+  color: var(--parch);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.party-strip {
+  flex: 0 1 auto;
+}
+
+.face {
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 3px solid var(--steel);
+  background: radial-gradient(circle at 35% 30%, #4a4a48, #17181a);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.face img {
+  width: 135%;
+  height: 135%;
+  object-fit: cover;
+  object-position: 50% 8%;
+  margin-left: -17%;
+}
+
+.face.is-on {
+  border-color: var(--gold);
+  box-shadow: 0 0 16px rgba(212, 175, 55, 0.6);
+}
+
+.face:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1100px) {
+  .moves {
     display: none;
   }
 }

@@ -6,7 +6,7 @@ dangers that exist only on screen. To play, you have to look up.
 
 Built with Vite + TypeScript. No server, no accounts, works offline.
 
-![A boss casting a spell: the hero must find the matching stone](docs/img/fight-cast.jpg)
+![A boss fight: the goblin boss throws bombs while the hero puck works in behind him](docs/img/boss-fight.jpg)
 
 - **Plan, design and review of the first draft:** [docs/REALM_PLAN.md](docs/REALM_PLAN.md)
 - **Original shooting-pad prototype:** still available at `/legacy.html`
@@ -48,20 +48,35 @@ No camera handy? **Save · play with mouse** and the pointer stands in for the p
 
 ## How it plays
 
-- Each kid creates a **hero** and picks a class: Blademaster (hard passes), Frost Mage
-  (figure-eights), Shadow Rogue (fast hands) or Rune Ranger (give-and-go). Each hero has
-  its own challenge tier, so different ages can share a party.
-- **Quests** teach one stickhandling pattern each. **Dungeons** chain fights into a boss.
-  The **raid** has the whole party taking 40-second shifts on one big boss.
-- Bring the puck to the start circle to begin. Then do what the top of the screen says.
-- Red circles, sweeping walls, hunting wisps and enemy spells only show on the TV.
-  Keep your eyes up or get hit.
+The puck is your hero. Creatures on the TV turn to face it, wind up and attack, and how
+you handle the puck decides what your hero does:
+
+| Do this with the puck | Your hero does this |
+| --- | --- |
+| Quick dribbles beside an enemy | Strikes it (harder from behind) |
+| Wide dribbles | Cleaves everything in reach |
+| Cut fast straight through an enemy | Dashes through it |
+| Draw a loop around enemies | Freezes and damages all inside |
+| Pass off a rebounder | Calls lightning: stuns, breaks shields and wards |
+
+- Grunts swing at a red cone in front of them. Berserkers charge down a lane and stun
+  themselves if they miss. Brutes block from the front. Shamans cast from range. Totems
+  heal and only lightning hurts them. Wisps swarm. Bosses do all of it.
+- **Quests** teach one enemy each. **Defend** quests have raiders coming at a ward from
+  every side. **Dungeons** end in a boss. The **raid** is one long boss fight in shifts.
+- Each kid creates a **hero** with a class and a challenge tier, so different ages can
+  share a party. In dungeons and raids the game calls **TAG IN** every 40–45 seconds.
 - Knocked down? Ten quick dribbles and you are back up.
 - **The Five-Minute Vigil** is the daily routine with a streak counter.
 - After each run a **practice report** shows touches, passes, clean catches, hardest pass
   and heads-up reactions.
 
+![Defending the ward stone from raiders](docs/img/defend.jpg)
+
 Controls during play: `Space` skips the start circle, `P` pauses, `Esc` leaves.
+
+Want to see it before setting up? Turn on **Watch it play itself** on the first screen
+and start any quest: a scripted player handles the puck.
 
 ## Status
 

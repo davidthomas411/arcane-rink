@@ -1,6 +1,6 @@
-import { playCue } from "../audio";
-import type { Adventure, EncounterDef } from "../game/content";
-import { Encounter, makeHeroRuntime, type HeroRuntime, type Objective } from "../game/encounter";
+import { playCue, startMusic, stopMusic } from "../audio";
+import type { Adventure, EncounterDef, EnemyKind } from "../game/content";
+import { Encounter, makeHeroRuntime, type Enemy, type HeroRuntime } from "../game/encounter";
 import type { Hero } from "../game/save";
 import type { Calibration } from "../input/calibration";
 import { GestureDetector, type PracticeStats } from "../input/Gestures";
@@ -18,40 +18,58 @@ export type SessionResult = {
   interrupts: number;
   reactionTimes: number[];
   seconds: number;
+  gold: number;
 };
 
 type Phase = "ready" | "fight" | "cleared" | "over";
+
+const asset = (name: string): string => new URL(`../assets/${name}`, import.meta.url).href;
+
+/** Portrait art per creature; the CSS filter matches the tint used on the floor. */
+const PORTRAITS: Record<EnemyKind, { img?: string; filter?: string; glyph?: string }> = {
+  grunt: { img: "goblin.png" },
+  berserker: { img: "goblin.png", filter: "hue-rotate(-75deg) saturate(1.5)" },
+  brute: { img: "goblin.png", filter: "hue-rotate(110deg) saturate(0.8)" },
+  shaman: { img: "goblin.png", filter: "hue-rotate(200deg) saturate(1.2)" },
+  boss: { img: "goblin.png", filter: "contrast(1.15) saturate(1.25)" },
+  runner: { img: "goblin-toon.png" },
+  totem: { glyph: "🗿" },
+  wisp: { glyph: "✨" },
+  dummy: { glyph: "🪵" }
+};
+
+export const HERO_PORTRAITS: Record<string, string> = { a: "hero-a.png", k: "hero-k.png" };
 
 function formatClock(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   return `${Math.floor(s / 60)}:${`${s % 60}`.padStart(2, "0")}`;
 }
 
-function objectiveText(o: Objective | null): { title: string; sub: string } {
-  if (!o) return { title: "Get ready…", sub: "" };
-  const left = (n: number): string => (n > 500 ? "as many as you can" : `${n} to go`);
-  switch (o.kind) {
-    case "runes":
-      return { title: "Carry the puck to the rune", sub: left(o.left) };
-    case "twin": {
-      const vertical = Math.abs(o.a.x - o.b.x) < 0.1;
-      const diagonal = !vertical && Math.abs(o.a.y - o.b.y) > 0.1;
-      const title = vertical ? "Pull and push between the runes" : diagonal ? "Diagonal dribbles, rune to rune" : o.wide ? "WIDE dribbles — reach for each rune" : "Quick dribbles between the runes";
-      return { title, sub: left(o.left) };
-    }
-    case "weave":
-      return { title: "Figure-eight around the stones", sub: o.left > 500 ? "as many loops as you can" : `${o.left} loops to go` };
-    case "bolt":
-      return { title: "PASS off the glowing crystal", sub: left(o.left) };
-    case "hold":
-      return { title: "Stop the puck dead in the circle", sub: "soft hands" };
-  }
+/** The one line of coaching at the top of the screen: what to do about what is on the floor right now. */
+function coach(enc: Encounter): { title: string; sub: string } {
+  const foes = enc.alive;
+  const wave = enc.waveCount > 1 && enc.waveIndex >= 0 ? `Wave ${enc.waveIndex + 1} of ${enc.waveCount} · ` : "";
+  const left = `${wave}${foes.length} left`;
+  if (enc.timed) return { title: enc.def.story, sub: enc.def.drill };
+  if (foes.length === 0) return { title: "Get ready…", sub: "" };
+  if (foes.some((e) => e.warded)) return { title: "He's warded — PASS off a crystal!", sub: "Only lightning breaks a ward" };
+  if (foes.some((e) => e.state === "aim" || e.state === "charge")) return { title: "Charge! Get out of the lane", sub: "If it misses, it's stunned — punish it" };
+  if (foes.some((e) => e.kind === "totem")) return { title: "PASS off a crystal to break the totem", sub: "It heals them and sticks can't hurt it" };
+  if (enc.ward && !enc.wardBroken) return { title: "Protect the ward — cut them off!", sub: left };
+  if (foes.every((e) => e.kind === "runner")) return { title: "Catch the imps!", sub: left };
+  if (foes.filter((e) => e.kind === "wisp").length >= 3) return { title: "Loop around the wisps — or cut through", sub: left };
+  if (foes.some((e) => e.only)) return { title: "Each post only falls to one move", sub: "Read the label under it" };
+  const t = enc.target;
+  if (t && t.shield && t.shieldDown <= 0 && t.stun <= 0) return { title: "Shield up — get the puck BEHIND it", sub: "Or crack it with a pass" };
+  if (foes.some((e) => e.state === "cast")) return { title: "It's casting — hit it or dodge sideways", sub: left };
+  return { title: "Dribble beside it — stay out of the red", sub: `Green arc is its weak back · ${left}` };
 }
 
 /** Runs one adventure: ready checks, hero rotation, the fight loop and the HUD. */
 export class PlaySession {
   private readonly el: HTMLDivElement;
   private readonly renderer: ArenaRenderer;
+  private readonly source: PuckSource;
   private readonly runtimes: HeroRuntime[];
   private readonly gestures: GestureDetector[];
   private readonly rng = makeRng((Date.now() ^ 0x9e3779b9) >>> 0);
@@ -71,9 +89,12 @@ export class PlaySession {
   private readonly results: SessionResult["encounters"] = [];
   private dodges = 0;
   private interrupts = 0;
+  private gold = 0;
   private readonly reactionTimes: number[] = [];
   private readonly refs: Record<string, HTMLElement> = {};
   private ended = false;
+  private shownEnemy = "";
+  private shownHero = "";
 
   private readonly onKey = (event: KeyboardEvent): void => {
     if (event.key === "Escape") this.finish(false);
@@ -86,7 +107,7 @@ export class PlaySession {
   private readonly onResize = (): void => this.layout();
 
   constructor(
-    private readonly root: HTMLElement,
+    root: HTMLElement,
     private readonly opts: {
       adventure: Adventure;
       heroes: Hero[];
@@ -95,7 +116,7 @@ export class PlaySession {
       onEnd: (result: SessionResult) => void;
     }
   ) {
-    const { adventure, heroes, cal } = opts;
+    const { heroes, cal } = opts;
     this.runtimes = heroes.map(makeHeroRuntime);
     this.gestures = this.runtimes.map((rt) => new GestureDetector(cal.rebounders, { passMinSpeed: rt.tier.passMinSpeed }));
 
@@ -105,13 +126,11 @@ export class PlaySession {
       <canvas class="play-canvas"></canvas>
       <div class="hud hud-top">
         <div class="frame enemy-frame" data-ref="enemyFrame">
-          <div class="portrait" data-ref="enemyGlyph"></div>
+          <div class="portrait" data-ref="enemyPortrait"></div>
           <div class="frame-body">
             <div class="frame-name"><span data-ref="enemyName"></span><small data-ref="stage"></small></div>
             <div class="bar bar-hp"><i data-ref="enemyBar"></i><span data-ref="enemyText"></span></div>
-            <div class="castbar is-off" data-ref="cast">
-              <div class="bar bar-cast"><i data-ref="castBar"></i><span>Find the matching stone!</span></div>
-            </div>
+            <div class="frame-note" data-ref="enemyNote"></div>
           </div>
         </div>
         <div class="objective" data-ref="objective">
@@ -121,11 +140,12 @@ export class PlaySession {
         <div class="meta">
           <div class="timer" data-ref="timer">0:00</div>
           <div class="combo" data-ref="combo"></div>
+          <div class="gold" data-ref="gold"></div>
         </div>
       </div>
       <div class="hud hud-bottom">
         <div class="frame hero-frame" data-ref="heroFrame">
-          <div class="portrait" data-ref="heroGlyph"></div>
+          <div class="portrait" data-ref="heroPortrait"></div>
           <div class="frame-body">
             <div class="frame-name"><span data-ref="heroName"></span><small data-ref="heroSub"></small></div>
             <div class="bar bar-hp bar-hero"><i data-ref="heroBar"></i><span data-ref="heroText"></span></div>
@@ -133,6 +153,13 @@ export class PlaySession {
           </div>
         </div>
         <div class="party-strip" data-ref="party"></div>
+        <div class="moves" data-ref="moves">
+          <span><b>Quick dribbles</b> strike</span>
+          <span><b>Wide dribbles</b> cleave</span>
+          <span><b>Cut through</b> dash</span>
+          <span><b>Loop around</b> freeze</span>
+          <span><b>Pass</b> lightning</span>
+        </div>
         <div class="play-side">
           <div class="tracker-chip" data-ref="tracker"></div>
           <button class="btn btn-small" data-ref="quit" type="button">Leave (Esc)</button>
@@ -154,12 +181,11 @@ export class PlaySession {
     window.addEventListener("keydown", this.onKey);
     window.addEventListener("resize", this.onResize);
     this.layout();
+    startMusic();
     this.raf = requestAnimationFrame(this.frame);
-    // Lets browser tests drive a session; stripped from production builds.
+    // Lets browser tests inspect a session; stripped from production builds.
     if (import.meta.env.DEV) (window as unknown as { __realmSession?: PlaySession }).__realmSession = this;
   }
-
-  private readonly source: PuckSource;
 
   private get hero(): HeroRuntime {
     return this.runtimes[this.heroIndex]!;
@@ -182,7 +208,11 @@ export class PlaySession {
   private layout(): void {
     const top = this.el.querySelector<HTMLElement>(".hud-top")!.getBoundingClientRect().height;
     const bottom = this.el.querySelector<HTMLElement>(".hud-bottom")!.getBoundingClientRect().height;
-    this.renderer.layout({ top: top + 26, bottom: bottom + 26, left: 22, right: 22 });
+    this.renderer.layout({ top: top + 30, bottom: bottom + 30, left: 30, right: 30 });
+  }
+
+  private readyPoint(): { x: number; y: number } {
+    return { x: this.opts.cal.arenaW / 2, y: this.opts.cal.arenaD * 0.72 };
   }
 
   private readonly frame = (ms: number): void => {
@@ -196,15 +226,17 @@ export class PlaySession {
   };
 
   private update(dt: number): void {
+    const gestures = this.gestures[this.heroIndex]!;
+    this.source.drive?.({ encounter: this.phase === "fight" ? this.encounter : null, ready: this.phase === "ready" ? this.readyPoint() : null, passing: gestures.passing });
     this.source.update(dt);
     const puck = this.source.sample;
-    const gestures = this.gestures[this.heroIndex]!;
     if (this.paused) return;
     gestures.update(dt, puck);
-    const { cal, adventure } = this.opts;
+    const { adventure } = this.opts;
 
     if (this.phase === "ready") {
-      const inside = puck.visible && dist(puck.x, puck.y, cal.arenaW / 2, cal.arenaD * 0.68) <= 1;
+      const p = this.readyPoint();
+      const inside = puck.visible && dist(puck.x, puck.y, p.x, p.y) <= 1;
       this.readyProgress = inside ? this.readyProgress + dt / 0.8 : Math.max(0, this.readyProgress - dt * 2);
       if (this.readyProgress >= 1) {
         this.phase = "fight";
@@ -220,15 +252,14 @@ export class PlaySession {
       if (this.lostTime > 1.2) return;
       const enc = this.encounter;
       enc.update(dt, puck, gestures);
+      this.renderer.addFx(enc.fx);
       this.totalSeconds += dt;
       for (const cue of enc.sfx) playCue(cue);
       if (enc.done) {
+        this.bank(enc);
         this.results.push({ def: enc.def, stars: enc.stars, time: enc.time, bestCombo: enc.bestCombo, damage: enc.damageDone });
-        this.dodges += enc.dodges;
-        this.interrupts += enc.interrupts;
-        this.reactionTimes.push(...enc.reactionTimes);
         this.phase = "cleared";
-        this.clearedTimer = 2.4;
+        this.clearedTimer = 2.6;
         return;
       }
       this.shiftTime += dt;
@@ -256,62 +287,96 @@ export class PlaySession {
     }
   }
 
+  private bank(enc: Encounter): void {
+    this.dodges += enc.dodges;
+    this.interrupts += enc.interrupts;
+    this.gold += enc.gold;
+    this.reactionTimes.push(...enc.reactionTimes);
+  }
+
+  private setPortrait(node: HTMLElement, key: string, shownKey: "shownEnemy" | "shownHero", html: string): void {
+    if (this[shownKey] === key) return;
+    this[shownKey] = key;
+    node.innerHTML = html;
+  }
+
   private render(time: number): void {
     const enc = this.encounter;
     const { cal, adventure } = this.opts;
     const puck = this.source.sample;
     const r = this.refs;
     const rt = this.hero;
+    const fresh = this.phase === "ready" && enc.time === 0;
 
     let ready: ReadyCircle | null = null;
     if (this.phase === "ready") {
-      ready = { x: cal.arenaW / 2, y: cal.arenaD * 0.68, r: 1, progress: this.readyProgress, label: this.readyLabel };
+      const p = this.readyPoint();
+      ready = { x: p.x, y: p.y, r: 1, progress: this.readyProgress, label: this.readyLabel };
     }
     let banner: string | null = null;
     if (this.paused) banner = "Paused — press P";
     else if (this.phase === "fight" && this.lostTime > 1.2) banner = "Puck lost — bring it back into view";
-    else if (this.phase === "cleared") banner = enc.timed ? "Time! Nice work" : `${enc.def.enemy.name} defeated!`;
+    else if (this.phase === "cleared") banner = enc.timed ? "Time! Nice work" : "Victory!";
 
-    this.renderer.draw({ time, puck, rebounders: cal.rebounders, encounter: this.phase === "ready" && enc.time === 0 ? null : enc, ready, banner });
+    this.renderer.heroColor = rt.cls.color;
+    this.renderer.draw({ time, puck, rebounders: cal.rebounders, encounter: fresh ? null : enc, ready, banner });
 
-    // Enemy frame
-    // While casting, the enemy holds its spell symbol up in place of its portrait.
-    r.enemyGlyph!.textContent = enc.cast ? enc.cast.sigil.glyph : enc.def.enemy.glyph;
-    r.enemyGlyph!.style.color = enc.cast ? enc.cast.sigil.color : "";
-    r.enemyGlyph!.style.borderColor = enc.cast ? enc.cast.sigil.color : "";
-    r.enemyGlyph!.classList.toggle("is-casting", enc.cast !== null);
-    r.enemyName!.textContent = enc.timed ? enc.def.name : enc.def.enemy.name;
+    // Target frame: the boss if there is one, otherwise whatever the hero is fighting.
+    const boss = enc.alive.find((e) => e.kind === "boss");
+    const shown: Enemy | null = boss ?? enc.target ?? null;
     r.stage!.textContent = adventure.encounters.length > 1 ? ` ${this.encounterIndex + 1} / ${adventure.encounters.length}` : "";
     if (enc.timed) {
+      this.setPortrait(r.enemyPortrait!, "timed", "shownEnemy", `<span>${enc.def.enemy.glyph}</span>`);
+      r.enemyName!.textContent = enc.def.name;
       r.enemyBar!.style.width = `${(enc.timeLeft / (enc.def.timeLimit ?? 1)) * 100}%`;
       r.enemyText!.textContent = `${formatClock(enc.timeLeft)} left · score ${enc.damageDone}`;
+      r.enemyNote!.textContent = "";
+    } else if (shown && !fresh) {
+      const art = PORTRAITS[shown.kind];
+      this.setPortrait(
+        r.enemyPortrait!,
+        shown.kind,
+        "shownEnemy",
+        art.img ? `<img src="${asset(art.img)}" alt="" style="filter:${art.filter ?? "none"}" />` : `<span>${art.glyph ?? "?"}</span>`
+      );
+      r.enemyName!.textContent = shown.name;
+      r.enemyBar!.style.width = `${(shown.hp / shown.maxHp) * 100}%`;
+      r.enemyText!.textContent = `${Math.ceil(shown.hp)} / ${shown.maxHp}`;
+      r.enemyNote!.textContent = shown.warded
+        ? "WARDED — needs lightning"
+        : shown.stun > 0
+          ? shown.frozen
+            ? "Frozen — hit it now!"
+            : "Stunned — hit it now!"
+          : shown.shield && shown.shieldDown <= 0
+            ? "Shield up — attack from behind"
+            : shown.state === "cast"
+              ? "Casting…"
+              : "";
     } else {
-      r.enemyBar!.style.width = `${(enc.enemyHp / enc.enemyMax) * 100}%`;
-      r.enemyText!.textContent = `${enc.enemyHp} / ${enc.enemyMax}`;
+      this.setPortrait(r.enemyPortrait!, "card", "shownEnemy", `<span>${enc.def.enemy.glyph}</span>`);
+      r.enemyName!.textContent = enc.def.enemy.name;
+      r.enemyBar!.style.width = "100%";
+      r.enemyText!.textContent = enc.def.name;
+      r.enemyNote!.textContent = "";
     }
-    r.enemyFrame!.classList.toggle("is-hit", enc.enemyFlash > 0.5);
-    r.cast!.classList.toggle("is-off", !enc.cast);
-    if (enc.cast) {
-      r.castBar!.style.width = `${(enc.cast.t / enc.cast.total) * 100}%`;
-    }
+    r.enemyFrame!.classList.toggle("is-hit", !!shown && shown.flash > 0.5);
 
-    // Objective
-    // Alerts take over the headline for a moment instead of covering the floor.
+    // Headline: alerts first, then the story before a fight, then live coaching.
     const callout = this.phase === "fight" ? enc.callout : null;
-    const obj = callout
-      ? { title: callout.text, sub: callout.sub }
-      : this.phase === "ready" && enc.time === 0
-        ? { title: enc.def.story, sub: enc.def.drill }
-        : objectiveText(enc.objective);
+    const obj = callout ? { title: callout.text, sub: callout.sub } : fresh ? { title: enc.def.story, sub: enc.def.drill } : coach(enc);
     r.objTitle!.textContent = obj.title;
     r.objSub!.textContent = obj.sub;
     r.objective!.classList.toggle("is-alert", callout !== null);
     r.timer!.textContent = formatClock(enc.time);
-    r.combo!.textContent = enc.combo >= 2 ? `Combo ×${enc.comboMult.toFixed(2)}` : "";
+    r.combo!.textContent = enc.combo >= 2 ? `${enc.combo} streak ×${enc.comboMult.toFixed(2)}` : "";
+    const gold = this.gold + enc.gold;
+    r.gold!.textContent = enc.ward ? `Ward ${Math.ceil(enc.ward.hp)}%${gold ? ` · ${gold} gold` : ""}` : gold ? `${gold} gold` : "";
 
     // Hero frame
-    r.heroGlyph!.textContent = rt.cls.glyph;
-    r.heroGlyph!.style.borderColor = rt.cls.color;
+    const face = HERO_PORTRAITS[rt.hero.portrait];
+    this.setPortrait(r.heroPortrait!, rt.hero.id, "shownHero", face ? `<img src="${asset(face)}" alt="" />` : `<span>${rt.cls.glyph}</span>`);
+    r.heroPortrait!.style.borderColor = rt.cls.color;
     r.heroName!.textContent = `${rt.hero.name} #${rt.hero.jersey}`;
     r.heroSub!.textContent = ` Lv ${rt.hero.level} ${rt.cls.name}`;
     r.heroBar!.style.width = `${(rt.hp / rt.maxHp) * 100}%`;
@@ -340,11 +405,7 @@ export class PlaySession {
   private finish(completed: boolean): void {
     if (this.ended) return;
     const enc = this.encounter;
-    if (!completed && enc.time > 0 && !enc.done) {
-      this.dodges += enc.dodges;
-      this.interrupts += enc.interrupts;
-      this.reactionTimes.push(...enc.reactionTimes);
-    }
+    if (!completed && enc.time > 0 && !enc.done) this.bank(enc);
     const result: SessionResult = {
       adventure: this.opts.adventure,
       completed,
@@ -353,7 +414,8 @@ export class PlaySession {
       dodges: this.dodges,
       interrupts: this.interrupts,
       reactionTimes: this.reactionTimes,
-      seconds: this.totalSeconds
+      seconds: this.totalSeconds,
+      gold: this.gold
     };
     this.destroy();
     this.opts.onEnd(result);
@@ -363,6 +425,7 @@ export class PlaySession {
     this.ended = true;
     this.phase = "over";
     cancelAnimationFrame(this.raf);
+    stopMusic();
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("resize", this.onResize);
     this.source.destroy();
