@@ -66,6 +66,7 @@ export class CalibrationScreen {
           <ul class="tips">
             <li><b>Far</b> means the edge nearest the TV. Whatever you mark as “Far left” is drawn top-left on the TV, so the picture matches what the player sees when facing it.</li>
             <li>Put the Green Biscuit on the floor and click it. Bright, even light helps; avoid green clothing and green toys in view.</li>
+            <li>On a tiled floor, put each corner on a tile joint and count tiles for the size: standard vinyl tiles are 12 inches, so 10 tiles is 10 ft.</li>
             <li>The puck is found when it is circled in yellow.</li>
           </ul>
         </section>

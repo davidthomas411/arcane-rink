@@ -62,9 +62,10 @@ describe("vision", () => {
       }
     };
     data.fill(120); // grey floor
-    paint(40, 30, 1.6, [30, 200, 60]); // puck
+    paint(40, 30, 1.6, [40, 190, 150]); // puck
     paint(120, 60, 8, [220, 40, 40]); // red toy
-    paint(10, 80, 0.5, [30, 200, 60]); // 1px green speck
+    paint(80, 20, 4, [90, 200, 60]); // grass-green toy: not the puck's teal
+    paint(10, 80, 0.5, [40, 190, 150]); // 1px green speck
     const cal = defaultCalibration();
     const blobs = findBlobs(data, w, h, cal.color, new Uint8Array(w * h), new Int32Array(w * h));
     expect(blobs).toHaveLength(1);

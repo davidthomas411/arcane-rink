@@ -141,6 +141,9 @@ the camera pipeline end to end against a synthetic video of a green dot.
 on the first evening:
 
 1. Colour thresholds under basement lighting (setup screen: click the puck, then sliders).
+   The default was checked against two phone photos of the real puck on the real floor:
+   it was the only thing detected in both, including a cluttered wide shot. That is
+   still photos, not a moving puck on a webcam.
 2. Pass-speed thresholds per tier (`TIERS` in `game/classes.ts`).
 3. Fight length and hazard timing (`game/content.ts`).
 4. Camera and TV latency. A game-mode TV setting and a 60 fps camera help.

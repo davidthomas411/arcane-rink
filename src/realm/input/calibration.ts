@@ -27,8 +27,11 @@ export type Calibration = {
 
 const KEY = "arcane-rink/realm-calibration.v1";
 
-/** Green Biscuit default: saturated mid-green. */
-export const DEFAULT_COLOR: PuckColor = { h: 120, hTol: 28, sMin: 0.35, vMin: 0.22 };
+/**
+ * Green Biscuit default. The puck is teal rather than pure green (hue about 168 in
+ * photos under warm basement light), so the window is centred there.
+ */
+export const DEFAULT_COLOR: PuckColor = { h: 165, hTol: 25, sMin: 0.25, vMin: 0.2 };
 
 export function defaultRebounders(arenaW: number, arenaD: number): Rebounder[] {
   return [
